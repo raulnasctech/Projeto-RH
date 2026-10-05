@@ -1,0 +1,33 @@
+schema: spec-driven
+githubCopilot:
+  cloudAgent: true
+
+schema: spec-driven
+
+context: |
+ context: |
+  Project: Sistema de Gestão de Recursos Humanos (RH)
+  Domain: Plataforma para gestão centralizada de funcionários, horários de trabalho e registo de assiduidade.
+  Frontend: Reflex é a tecnologia obrigatória para implementação das interfaces frontend do projeto. Não introduzir outra tecnologia de frontend sem uma mudança explícita da decisão arquitetural.
+  Architecture: O Backend é o responsável pelas regras de negócio, persistência de dados e segurança. O Frontend não deve ser considerado um mecanismo de segurança.
+  Security: Apenas utilizadores com perfil de RH podem alterar horários e cadastros.
+  Development: O sistema deve ser desenvolvido de forma incremental utilizando o OpenSpec.
+  Language: Escrever a documentação do projeto, o código e os artefactos do OpenSpec em português. 
+
+rules:
+  proposal:
+    - Descrever claramente o problema, o objetivo e o escopo da alteração.
+    - Explicitar o que está fora do escopo, para evitar funcionalidades desnecessárias.
+  specs:
+    - Escrever requisitos claros e verificáveis.
+    - Utilizar cenários práticos para os comportamentos mais importantes (ex: registo de ponto com atraso).
+  tasks:
+    - Dividir a implementação em tarefas técnicas pequenas e verificáveis.
+
+operations:
+  apply:
+    guidance:
+      - Executar testes ou verificações relevantes antes de dar a tarefa como concluída.
+  archive:
+    guidance:
+      - Confirmar rigorosamente se o código implementado corresponde ao que foi definido na especificação (specs).
