@@ -2,10 +2,7 @@ schema: spec-driven
 githubCopilot:
   cloudAgent: true
 
-schema: spec-driven
-
 context: |
- context: |
   Project: Sistema de Gestão de Recursos Humanos (RH)
   Domain: Plataforma para gestão centralizada de funcionários, horários de trabalho e registo de assiduidade.
   Frontend: Reflex é a tecnologia obrigatória para implementação das interfaces frontend do projeto. Não introduzir outra tecnologia de frontend sem uma mudança explícita da decisão arquitetural.
@@ -20,7 +17,7 @@ rules:
     - Explicitar o que está fora do escopo, para evitar funcionalidades desnecessárias.
   specs:
     - Escrever requisitos claros e verificáveis.
-    - Utilizar cenários práticos para os comportamentos mais importantes (ex: registo de ponto com atraso).
+    - "Utilizar cenários práticos para os comportamentos mais importantes (ex: registo de ponto com atraso)."
   tasks:
     - Dividir a implementação em tarefas técnicas pequenas e verificáveis.
 

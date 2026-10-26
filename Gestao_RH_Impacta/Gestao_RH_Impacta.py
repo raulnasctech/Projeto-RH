@@ -1,34 +1,105 @@
 """Tela de acesso do Sistema de Gestão de RH."""
 
 import os
+from datetime import date
 
 import httpx
 import reflex as rx
 from dotenv import load_dotenv
 
+from Gestao_RH_Impacta.auth_service import (
+    AuthenticationError,
+    SessionRejected,
+    authenticate,
+    get_authenticated_user,
+)
+from Gestao_RH_Impacta.employee_service import (
+    EmployeeAccessDenied,
+    EmployeeCreationError,
+    EmployeeDirectoryError,
+    create_employee,
+    get_employee,
+    get_employee_form_options,
+    list_employees,
+    update_employee,
+)
+from Gestao_RH_Impacta.department_service import (
+    DepartmentAccessDenied,
+    DepartmentError,
+    create_department,
+    list_departments,
+    update_department,
+)
+
 
 load_dotenv()
 XANO_AUTH_API_URL = os.getenv("XANO_AUTH_API_URL", "").rstrip("/")
+XANO_RH_API_URL = os.getenv("XANO_RH_API_URL", "").rstrip("/")
 
 
 class State(rx.State):
     """Estado do formulário de acesso."""
 
     email: str = ""
-    password: str = ""
+    _password: str = ""
     name: str = ""
     cpf: str = ""
     celular: str = ""
     show_password: bool = False
     error_message: str = ""
-    auth_token: str = rx.LocalStorage(name="xano_auth_token")
-    user_name: str = rx.LocalStorage(name="xano_user_name")
+    _auth_token: str = ""
+    _auth_user_name: str = ""
+    _authenticated: bool = False
+    _skip_next_auth_check: bool = False
+    employee_rows: list[dict[str, str]] = []
+    employee_active_count: str = ""
+    employee_total_count: str = "0"
+    employee_vacation_count: str = "0"
+    employee_list_status: str = "loading"
+    employee_list_error: str = ""
+    employee_form_open: bool = False
+    employee_form_status: str = "idle"
+    employee_form_error: str = ""
+    employee_form_success: str = ""
+    employee_department_options: list[dict[str, str]] = []
+    employee_user_options: list[dict[str, str]] = []
+    employee_form_name: str = ""
+    employee_form_user_id: str = ""
+    employee_form_department_id: str = ""
+    employee_form_job_title: str = ""
+    employee_form_admission_date: str = ""
+    edit_employee_open: bool = False
+    edit_employee_id: str = ""
+    edit_employee_name: str = ""
+    edit_employee_job_title: str = ""
+    edit_employee_status: str = "Ativo"
+    edit_employee_status_state: str = "idle"
+    edit_employee_error: str = ""
+    department_rows: list[dict[str, str]] = []
+    department_list_status: str = "loading"
+    department_list_error: str = ""
+    department_form_open: bool = False
+    department_form_name: str = ""
+    department_form_error: str = ""
+    department_form_success: str = ""
+    edit_department_open: bool = False
+    edit_department_id: str = ""
+    edit_department_name: str = ""
+    edit_department_error: str = ""
+
+    @rx.var
+    def user_name(self) -> str:
+        return self._auth_user_name
+
+    @rx.var
+    def is_authenticated(self) -> bool:
+        return self._authenticated
 
     def set_email(self, email: str):
         self.email = email
 
     def set_password(self, password: str):
-        self.password = password
+        self._password = password
 
     def set_name(self, name: str):
         self.name = name
@@ -39,11 +110,37 @@ class State(rx.State):
     def set_celular(self, celular: str):
         self.celular = celular
 
+    def set_employee_form_name(self, name: str):
+        self.employee_form_name = name
+        self.employee_form_error = ""
+
+    def set_employee_form_user_id(self, user_id: str):
+        self.employee_form_user_id = user_id
+        self.employee_form_error = ""
+
+    def set_employee_form_department_id(self, department_id: str):
+        self.employee_form_department_id = department_id
+        self.employee_form_error = ""
+
+    def set_employee_form_job_title(self, job_title: str):
+        self.employee_form_job_title = job_title
+        self.employee_form_error = ""
+
+    def set_employee_form_admission_date(self, admission_date: str):
+        self.employee_form_admission_date = admission_date
+        self.employee_form_error = ""
+
     def set_show_password(self, show_password: bool):
         self.show_password = show_password
 
+    def handle_employee_form_open_change(self, is_open: bool):
+        self.employee_form_open = is_open
+        if not is_open and self.employee_form_status != "saving":
+            self.employee_form_status = "idle"
+            self.employee_form_error = ""
+
     def _validate_credentials(self) -> bool:
-        if not self.email.strip() or not self.password:
+        if not self.email.strip() or not self._password:
             self.error_message = "Informe seu e-mail e sua senha para continuar."
             return False
         elif "@" not in self.email:
@@ -54,39 +151,37 @@ class State(rx.State):
             return False
         return True
 
-    async def _authenticate(self, endpoint: str, payload: dict) -> bool:
+    async def _authenticate(self, endpoint: str, payload: dict[str, str]) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=12) as client:
-                response = await client.post(f"{XANO_AUTH_API_URL}{endpoint}", json=payload)
-            if response.is_error:
-                detail = response.json().get("message") or response.json().get("error")
-                self.error_message = detail or "Não foi possível concluir a solicitação."
-                return False
-            token = response.json().get("authToken")
-            if not token:
-                self.error_message = "O Xano não retornou um token de acesso."
-                return False
-            self.auth_token = token
-            async with httpx.AsyncClient(timeout=12) as client:
-                profile = await client.get(
-                    f"{XANO_AUTH_API_URL}/auth/me",
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-            if profile.is_success:
-                self.user_name = profile.json().get("name", "")
-            self.password = ""
-            self.error_message = ""
-            return True
-        except (httpx.HTTPError, ValueError):
-            self.error_message = "Não foi possível conectar ao Xano. Verifique a URL da API."
+            user = await authenticate(XANO_AUTH_API_URL, endpoint, payload)
+        except AuthenticationError as error:
+            self._clear_session()
+            self._password = ""
+            self.error_message = str(error)
             return False
+        except httpx.HTTPError:
+            self._clear_session()
+            self._password = ""
+            self.error_message = "N\u00e3o foi poss\u00edvel conectar ao Xano. Verifique a URL da API."
+            return False
+
+        self._auth_token = user.token
+        self._auth_user_name = user.user_name
+        self._authenticated = True
+        self._skip_next_auth_check = True
+        self._password = ""
+        self.error_message = ""
+        return True
 
     async def submit_login(self):
         """Autentica as credenciais no endpoint Xano e abre o painel."""
-        if self._validate_credentials() and await self._authenticate(
-            "/auth/login", {"email": self.email, "password": self.password}
+        if not self._validate_credentials():
+            return
+        if await self._authenticate(
+            "/auth/login", {"email": self.email, "password": self._password}
         ):
             return rx.redirect("/inicio")
+        return self._clear_password_input()
 
     async def submit_signup(self):
         """Cria o usuário no Xano e inicia sua sessão."""
@@ -95,7 +190,7 @@ class State(rx.State):
             return
         if not self._validate_credentials():
             return
-        if len(self.password) < 8:
+        if len(self._password) < 8:
             self.error_message = "A senha deve ter ao menos 8 caracteres."
             return
         if await self._authenticate(
@@ -103,17 +198,556 @@ class State(rx.State):
             {
                 "name": self.name,
                 "email": self.email,
-                "password": self.password,
+                "password": self._password,
                 "cpf": self.cpf,
                 "celular": self.celular,
             },
         ):
             return rx.redirect("/inicio")
+        return self._clear_password_input()
+
+    def _clear_password_input(self):
+        return rx.call_script(
+            "const input = document.getElementById('password-input'); "
+            "if (input) input.value = '';"
+        )
+
+    def _clear_session(self):
+        self._auth_token = ""
+        self._auth_user_name = ""
+        self._authenticated = False
+        self._skip_next_auth_check = False
+        self.employee_rows = []
+        self.employee_active_count = ""
+        self.employee_list_status = "loading"
+        self.employee_list_error = ""
+        self.employee_form_open = False
+        self.employee_form_status = "idle"
+        self.employee_form_error = ""
+        self.employee_form_success = ""
+        self.employee_department_options = []
+        self.employee_user_options = []
+        self.employee_form_name = ""
+        self.employee_form_user_id = ""
+        self.employee_form_department_id = ""
+        self.employee_form_job_title = ""
+        self.employee_form_admission_date = ""
+
+    async def require_auth(self):
+        """Valida a sessao no Xano antes de apresentar paginas internas."""
+        if not self._auth_token:
+            self._clear_session()
+            return rx.redirect("/")
+        if self._skip_next_auth_check:
+            self._skip_next_auth_check = False
+            self._authenticated = True
+            self.error_message = ""
+            return
+        try:
+            user = await get_authenticated_user(XANO_AUTH_API_URL, self._auth_token)
+        except SessionRejected:
+            self._clear_session()
+            self.error_message = "Sua sess\u00e3o expirou. Entre novamente."
+            return rx.redirect("/")
+        except AuthenticationError:
+            self._authenticated = False
+            self.error_message = "N\u00e3o foi poss\u00edvel validar sua sess\u00e3o no Xano."
+            return rx.redirect("/")
+        except httpx.HTTPError:
+            self._authenticated = False
+            self.error_message = "N\u00e3o foi poss\u00edvel conectar ao Xano para validar sua sess\u00e3o."
+            return rx.redirect("/")
+
+        self._auth_user_name = user.user_name
+        self._authenticated = True
+        self.error_message = ""
+
+    async def load_employees(self):
+        """Carrega a lista; a API protegida valida a sessão e o perfil."""
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.employee_list_status = "loading"
+        self.employee_active_count = ""
+        self.employee_list_error = ""
+        yield
+
+        try:
+            employees = await list_employees(XANO_RH_API_URL, self._auth_token)
+        except EmployeeAccessDenied as error:
+            try:
+                await get_authenticated_user(XANO_AUTH_API_URL, self._auth_token)
+            except SessionRejected:
+                self._clear_session()
+                self.error_message = "Sua sessão expirou. Entre novamente."
+                self.employee_list_error = self.error_message
+                self.employee_list_status = "error"
+                yield rx.redirect("/")
+                return
+            except AuthenticationError:
+                self.employee_list_error = (
+                    "Não foi possível validar sua sessão para consultar colaboradores."
+                )
+                self.employee_list_status = "error"
+            except httpx.HTTPError:
+                self.employee_list_error = (
+                    "Não foi possível verificar a autorização para consultar colaboradores."
+                )
+                self.employee_list_status = "error"
+            else:
+                self.employee_list_error = str(error)
+                self.employee_list_status = "error"
+        except EmployeeDirectoryError as error:
+            self.employee_list_error = str(error)
+            self.employee_list_status = "error"
+        except httpx.HTTPError:
+            self.employee_list_error = (
+                "Não foi possível conectar ao Xano para carregar colaboradores."
+            )
+            self.employee_list_status = "error"
+        else:
+            self.employee_rows = [employee.as_dict() for employee in employees]
+            self.employee_total_count = str(len(employees))
+            self.employee_active_count = str(
+                sum(employee.status == "Ativo" for employee in employees)
+            )
+            self.employee_vacation_count = str(
+                sum(employee.status == "Férias" for employee in employees)
+            )
+            self.employee_list_status = "loaded" if employees else "empty"
+        yield
+
+    async def open_employee_form(self):
+        """Abre o cadastro e carrega opções autorizadas do backend."""
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.employee_form_open = True
+        self.employee_form_status = "loading"
+        self.employee_form_error = ""
+        self.employee_form_success = ""
+        self.employee_department_options = []
+        self.employee_user_options = []
+        self.employee_form_name = ""
+        self.employee_form_user_id = ""
+        self.employee_form_department_id = ""
+        self.employee_form_job_title = ""
+        self.employee_form_admission_date = ""
+        yield
+
+        try:
+            options = await get_employee_form_options(
+                XANO_RH_API_URL, self._auth_token
+            )
+        except EmployeeAccessDenied as error:
+            try:
+                await get_authenticated_user(XANO_AUTH_API_URL, self._auth_token)
+            except SessionRejected:
+                self._clear_session()
+                yield rx.redirect("/")
+                return
+            except AuthenticationError:
+                self.employee_form_error = (
+                    "Não foi possível validar sua sessão para carregar o cadastro."
+                )
+                self.employee_form_status = "error"
+            except httpx.HTTPError:
+                self.employee_form_error = (
+                    "Não foi possível verificar a autorização para o cadastro."
+                )
+                self.employee_form_status = "error"
+            else:
+                self.employee_form_error = str(error)
+                self.employee_form_status = "error"
+        except EmployeeCreationError as error:
+            self.employee_form_error = str(error)
+            self.employee_form_status = "error"
+        except httpx.HTTPError:
+            self.employee_form_error = (
+                "Não foi possível conectar ao Xano para carregar as opções."
+            )
+            self.employee_form_status = "error"
+        else:
+            self.employee_department_options = [
+                option.as_dict() for option in options.departments
+            ]
+            self.employee_user_options = [
+                option.as_dict() for option in options.users
+            ]
+            self.employee_form_status = "ready"
+
+        yield
+
+    async def submit_employee(self):
+        """Valida e envia o cadastro de funcionário ao Xano."""
+        if self.employee_form_status not in {"ready", "error"}:
+            return
+        if not self.employee_form_name.strip():
+            self.employee_form_error = "Informe o nome do funcionário."
+            return
+        if not any(
+            option["id"] == self.employee_form_user_id
+            for option in self.employee_user_options
+        ):
+            self.employee_form_error = "Selecione uma conta existente."
+            return
+        if not any(
+            option["id"] == self.employee_form_department_id
+            for option in self.employee_department_options
+        ):
+            self.employee_form_error = "Selecione um departamento."
+            return
+        if self.employee_form_admission_date:
+            try:
+                date.fromisoformat(self.employee_form_admission_date)
+            except ValueError:
+                self.employee_form_error = (
+                    "Informe uma data de admissão válida."
+                )
+                return
+
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.employee_form_status = "saving"
+        self.employee_form_error = ""
+        self.employee_form_success = ""
+        yield
+
+        try:
+            employee_id = await create_employee(
+                XANO_RH_API_URL,
+                self._auth_token,
+                self.employee_form_name,
+                self.employee_form_user_id,
+                self.employee_form_department_id,
+                self.employee_form_job_title,
+                self.employee_form_admission_date,
+            )
+        except EmployeeAccessDenied as error:
+            try:
+                await get_authenticated_user(XANO_AUTH_API_URL, self._auth_token)
+            except SessionRejected:
+                self._clear_session()
+                yield rx.redirect("/")
+                return
+            except AuthenticationError:
+                self.employee_form_error = (
+                    "Não foi possível validar sua sessão para cadastrar."
+                )
+                self.employee_form_status = "error"
+            except httpx.HTTPError:
+                self.employee_form_error = (
+                    "Não foi possível verificar a autorização do cadastro."
+                )
+                self.employee_form_status = "error"
+            else:
+                self.employee_form_error = str(error)
+                self.employee_form_status = "error"
+        except EmployeeCreationError as error:
+            self.employee_form_error = str(error)
+            self.employee_form_status = "error"
+        except httpx.HTTPError:
+            self.employee_form_error = (
+                "Não foi possível conectar ao Xano para cadastrar o funcionário."
+            )
+            self.employee_form_status = "error"
+        else:
+            try:
+                employees = await list_employees(
+                    XANO_RH_API_URL, self._auth_token
+                )
+            except (EmployeeDirectoryError, httpx.HTTPError):
+                self.employee_form_status = "success"
+                self.employee_form_success = (
+                    "O Xano confirmou o cadastro, mas não foi possível "
+                    "atualizar a listagem. Não cadastre o funcionário novamente."
+                )
+                self.employee_list_error = (
+                    "Atualize e publique o GET /employees no Xano para "
+                    "sincronizar a listagem e o total."
+                )
+                self.employee_list_status = "error"
+            else:
+                self.employee_rows = [
+                    employee.as_dict() for employee in employees
+                ]
+                self.employee_active_count = str(
+                    sum(employee.status == "Ativo" for employee in employees)
+                )
+                employee_confirmed = any(
+                    employee.id == employee_id for employee in employees
+                )
+                self.employee_list_status = (
+                    "loaded" if employees else "empty"
+                )
+                self.employee_list_error = ""
+                self.employee_form_status = "success"
+                if employee_confirmed:
+                    self.employee_form_success = (
+                        "Funcionário cadastrado e confirmado na listagem."
+                    )
+                else:
+                    self.employee_form_success = (
+                        "O Xano confirmou o cadastro, mas o GET /employees "
+                        "não retornou esse funcionário. Publique a atualização "
+                        "do endpoint no Xano; não cadastre novamente."
+                    )
+                    self.employee_list_status = "error"
+                    self.employee_list_error = (
+                        "A resposta do Xano ainda não inclui o funcionário "
+                        "recém-cadastrado."
+                    )
+
+            self.employee_form_open = False
+            self.employee_form_name = ""
+            self.employee_form_user_id = ""
+            self.employee_form_department_id = ""
+            self.employee_form_job_title = ""
+            self.employee_form_admission_date = ""
+            yield
+
+            return
+
+        yield
+
+    def set_edit_employee_name(self, name: str):
+        self.edit_employee_name = name
+        self.edit_employee_error = ""
+
+    def set_edit_employee_job_title(self, title: str):
+        self.edit_employee_job_title = title
+        self.edit_employee_error = ""
+
+    def set_edit_employee_status(self, status: str):
+        self.edit_employee_status = status
+        self.edit_employee_error = ""
+
+    def handle_edit_employee_open_change(self, is_open: bool):
+        self.edit_employee_open = is_open
+        if not is_open and self.edit_employee_status_state != "saving":
+            self.edit_employee_status_state = "idle"
+            self.edit_employee_error = ""
+
+    async def open_edit_employee(self, employee_id: str):
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.edit_employee_id = employee_id
+        self.edit_employee_open = True
+        self.edit_employee_status_state = "loading"
+        self.edit_employee_error = ""
+        yield
+
+        try:
+            emp = await get_employee(XANO_RH_API_URL, self._auth_token, employee_id)
+        except Exception as error:
+            self.edit_employee_error = str(error)
+            self.edit_employee_status_state = "error"
+        else:
+            self.edit_employee_name = emp.name
+            self.edit_employee_job_title = "" if emp.job_title == "Não informado" else emp.job_title
+            self.edit_employee_status = emp.status if emp.status in {"Ativo", "Inativo", "Férias"} else "Ativo"
+            self.edit_employee_status_state = "ready"
+
+        yield
+
+    async def submit_edit_employee(self):
+        if not self.edit_employee_name.strip():
+            self.edit_employee_error = "O nome não pode estar vazio."
+            return
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.edit_employee_status_state = "saving"
+        self.edit_employee_error = ""
+        yield
+
+        try:
+            await update_employee(
+                XANO_RH_API_URL,
+                self._auth_token,
+                self.edit_employee_id,
+                name=self.edit_employee_name,
+                job_title=self.edit_employee_job_title,
+                status=self.edit_employee_status,
+            )
+        except Exception as error:
+            self.edit_employee_error = str(error)
+            self.edit_employee_status_state = "error"
+        else:
+            try:
+                employees = await list_employees(XANO_RH_API_URL, self._auth_token)
+            except Exception:
+                pass
+            else:
+                self.employee_rows = [e.as_dict() for e in employees]
+                self.employee_active_count = str(
+                    sum(e.status == "Ativo" for e in employees)
+                )
+                self.employee_vacation_count = str(
+                    sum(e.status == "Férias" for e in employees)
+                )
+            self.edit_employee_open = False
+            self.edit_employee_status_state = "idle"
+
+        yield
+
+    def set_department_form_name(self, name: str):
+        self.department_form_name = name
+        self.department_form_error = ""
+
+    def set_edit_department_name(self, name: str):
+        self.edit_department_name = name
+        self.edit_department_error = ""
+
+    def handle_department_form_open_change(self, is_open: bool):
+        self.department_form_open = is_open
+        if not is_open:
+            self.department_form_name = ""
+            self.department_form_error = ""
+
+    def handle_edit_department_open_change(self, is_open: bool):
+        self.edit_department_open = is_open
+        if not is_open:
+            self.edit_department_error = ""
+
+    async def load_departments(self):
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.department_list_status = "loading"
+        self.department_list_error = ""
+        yield
+
+        try:
+            depts = await list_departments(XANO_RH_API_URL, self._auth_token)
+        except DepartmentAccessDenied as error:
+            self.department_list_error = str(error)
+            self.department_list_status = "error"
+        except DepartmentError as error:
+            self.department_list_error = str(error)
+            self.department_list_status = "error"
+        except httpx.HTTPError:
+            self.department_list_error = "Não foi possível conectar ao Xano."
+            self.department_list_status = "error"
+        else:
+            self.department_rows = [
+                {"id": str(d.get("id", "")), "name": str(d.get("nome", d.get("name", "")))}
+                for d in depts
+            ]
+            self.department_list_status = "loaded" if depts else "empty"
+
+        yield
+
+    async def open_department_form(self):
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+        self.department_form_name = ""
+        self.department_form_error = ""
+        self.department_form_success = ""
+        self.department_form_open = True
+        yield
+
+    async def submit_department(self):
+        if not self.department_form_name.strip():
+            self.department_form_error = "O nome do departamento não pode estar vazio."
+            return
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.department_form_error = ""
+        yield
+
+        try:
+            await create_department(
+                XANO_RH_API_URL, self._auth_token, self.department_form_name
+            )
+        except Exception as error:
+            self.department_form_error = str(error)
+        else:
+            try:
+                depts = await list_departments(XANO_RH_API_URL, self._auth_token)
+            except Exception:
+                pass
+            else:
+                self.department_rows = [
+                    {"id": str(d.get("id", "")), "name": str(d.get("nome", d.get("name", "")))}
+                    for d in depts
+                ]
+                self.department_list_status = "loaded" if depts else "empty"
+            self.department_form_open = False
+            self.department_form_name = ""
+            self.department_form_success = "Departamento cadastrado com sucesso."
+
+        yield
+
+    async def open_edit_department(self, dept_id: str, dept_name: str):
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+        self.edit_department_id = dept_id
+        self.edit_department_name = dept_name
+        self.edit_department_error = ""
+        self.edit_department_open = True
+        yield
+
+    async def submit_edit_department(self):
+        if not self.edit_department_name.strip():
+            self.edit_department_error = "O nome não pode estar vazio."
+            return
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.edit_department_error = ""
+        yield
+
+        try:
+            await update_department(
+                XANO_RH_API_URL,
+                self._auth_token,
+                self.edit_department_id,
+                self.edit_department_name,
+            )
+        except Exception as error:
+            self.edit_department_error = str(error)
+        else:
+            try:
+                depts = await list_departments(XANO_RH_API_URL, self._auth_token)
+            except Exception:
+                pass
+            else:
+                self.department_rows = [
+                    {"id": str(d.get("id", "")), "name": str(d.get("nome", d.get("name", "")))}
+                    for d in depts
+                ]
+                self.department_list_status = "loaded" if depts else "empty"
+            self.edit_department_open = False
+
+        yield
 
     def sign_out(self):
-        self.auth_token = ""
-        self.user_name = ""
-        self.password = ""
+        self._clear_session()
+        self._password = ""
         return rx.redirect("/")
 
 
@@ -165,7 +799,7 @@ def login_form() -> rx.Component:
                     ),
                     rx.input(
                         placeholder="Digite sua senha", type=rx.cond(State.show_password, "text", "password"),
-                        value=State.password, on_change=State.set_password, on_blur=State.submit_login,
+                        id="password-input", on_change=State.set_password,
                         width="100%", height="48px",
                         border_radius="10px", border="1px solid #d8e5e1", background="white", color="#173b35",
                     ),
@@ -237,7 +871,7 @@ def signup_form() -> rx.Component:
                     rx.text("Senha", weight="medium", color="#35534c", font_size="0.88rem"),
                     rx.input(
                         placeholder="Mínimo de 8 caracteres", type=rx.cond(State.show_password, "text", "password"),
-                        value=State.password, on_change=State.set_password, **field_style,
+                        id="password-input", on_change=State.set_password, **field_style,
                     ),
                     rx.checkbox("Exibir senha", checked=State.show_password, on_change=State.set_show_password,
                                 color="#52706a", font_size="0.82rem"),
@@ -322,17 +956,15 @@ def dashboard() -> rx.Component:
         brand(inverted=True),
         rx.vstack(
             navigation_item("Visão geral", "/inicio", active=True),
-            navigation_item("Meu horário", "/horario"),
-            navigation_item("Minha equipe", "/equipe"),
-            navigation_item("Solicitações", "/solicitacoes"),
-            navigation_item("Perfil", "/perfil"),
             navigation_item("Colaboradores", "/colaboradores"),
+            navigation_item("Departamentos", "/departamentos"),
+            navigation_item("Perfil", "/perfil"),
             spacing="2", width="100%", margin_top="46px",
         ),
         rx.spacer(),
         rx.box(
             rx.text("PRECISA DE AJUDA?", color="#9fc7bd", font_size="0.66rem", letter_spacing="0.09em"),
-            rx.text("Fale com o RH", color="white", weight="medium", margin_top="5px"),
+            rx.text("Suporte RH", color="white", weight="medium", margin_top="5px"),
             padding="15px", background="rgba(255,255,255,0.1)", border_radius="12px", width="100%",
         ),
         width="248px", min_height="100vh", padding="32px 20px", background="#103f37",
@@ -341,75 +973,37 @@ def dashboard() -> rx.Component:
 
     header = rx.hstack(
         rx.vstack(
-            rx.text("DOMINGO, 5 DE OUTUBRO", color="#78918a", font_size="0.72rem", letter_spacing="0.08em"),
-            rx.heading("Olá, Marina!", size="7", color="#173e36"),
+            rx.text("PAINEL DO GESTOR DE RH", color="#78918a", font_size="0.72rem", letter_spacing="0.08em"),
+            rx.heading("Visão geral da empresa", size="7", color="#173e36"),
             spacing="1", align_items="start",
         ),
         rx.hstack(
-            rx.box(rx.text("MN", color="#176f5d", weight="bold", font_size="0.82rem"), width="36px", height="36px",
+            rx.box(rx.text("RH", color="#176f5d", weight="bold", font_size="0.82rem"), width="36px", height="36px",
                    border_radius="full", background="#d9f1ea", display="flex", align_items="center", justify_content="center"),
-            rx.vstack(rx.text(rx.cond(State.user_name != "", State.user_name, "Marina Nunes"), color="#254a42", weight="medium", font_size="0.85rem"),
-                      rx.text("Colaboradora", color="#82978f", font_size="0.72rem"), spacing="0", align_items="start"),
+            rx.vstack(rx.text(rx.cond(State.user_name != "", State.user_name, "Gestor(a)"), color="#254a42", weight="medium", font_size="0.85rem"),
+                      rx.text("Gestor RH", color="#82978f", font_size="0.72rem"), spacing="0", align_items="start"),
             rx.button("Sair", on_click=State.sign_out, variant="ghost", color="#58766e", size="2"),
             spacing="2", align="center",
         ),
         width="100%", justify="between", align="center",
     )
 
-    time_card = rx.box(
-        rx.hstack(
-            rx.vstack(
-                rx.text("JORNADA DE HOJE", color="#6d8780", font_size="0.72rem", letter_spacing="0.08em"),
-                rx.text("Você está trabalhando", color="#1b453c", weight="bold", font_size="1.15rem", margin_top="7px"),
-                rx.text("Entrada registrada às 08:04", color="#78918a", font_size="0.84rem", margin_top="3px"),
-                spacing="0", align_items="start",
-            ),
-            rx.box(rx.text("EM JORNADA", color="#14745f", weight="bold", font_size="0.68rem"), padding="7px 10px",
-                   border_radius="full", background="#dff5ed"),
-            width="100%", justify="between", align="start",
-        ),
-        rx.hstack(
-            rx.vstack(rx.text("05h 34min", color="#173e36", weight="bold", font_size="1.7rem"),
-                      rx.text("horas trabalhadas", color="#81958f", font_size="0.78rem"), spacing="0", align_items="start"),
-            rx.button("Registrar ponto", background="#15856d", color="white", height="42px", border_radius="9px",
-                      _hover={"background": "#106f5b"}),
-            width="100%", justify="between", align="end", margin_top="24px",
-        ),
-        background="linear-gradient(135deg, #eefaf5 0%, #ffffff 78%)", border="1px solid #d7ebe4",
-        border_radius="16px", padding="24px", width="100%",
-    )
-
     main = rx.vstack(
         header,
         rx.grid(
-            summary_card("PRÓXIMO TURNO", "Seg · 08:00", "Presencial · 8h diárias", "#5989dc"),
-            summary_card("BANCO DE HORAS", "+ 02h 15min", "Atualizado hoje", "#38b596"),
-            summary_card("FÉRIAS", "12 dias", "Disponíveis para agendar", "#d69b4d"),
-            columns=rx.breakpoints(initial="1", md="3"), spacing="4", width="100%",
-        ),
-        rx.grid(
-            rx.vstack(time_card, spacing="0", width="100%"),
-            rx.box(
-                rx.hstack(rx.text("Próximos eventos", color="#20473e", weight="bold", font_size="1.05rem"),
-                          rx.link("Ver agenda", href="#", color="#17846c", font_size="0.82rem", margin_left="auto"), width="100%"),
-                event_row("10:00", "Reunião de equipe", "Sala Innovation · 2º andar", "#5286db"),
-                rx.divider(border_color="#edf2f0"),
-                event_row("12:00", "Início do intervalo", "Retorno previsto às 13:00", "#37b899"),
-                rx.divider(border_color="#edf2f0"),
-                event_row("Sex, 11", "Aniversário da empresa", "Evento institucional", "#d49a4a"),
-                background="white", border="1px solid #e1ece8", border_radius="16px", padding="22px", width="100%",
-            ),
-            columns=rx.breakpoints(initial="1", lg="2"), spacing="4", width="100%",
+            summary_card("TOTAL COLABORADORES", State.employee_total_count, "Cadastrados no sistema", "#15856d"),
+            summary_card("TOTAL COLABORADORES EM FÉRIAS", State.employee_vacation_count, "Atualmente em férias", "#d69b4d"),
+            columns=rx.breakpoints(initial="1", md="2"), spacing="4", width="100%",
         ),
         rx.box(
             rx.text("AÇÕES RÁPIDAS", color="#78918a", font_size="0.72rem", letter_spacing="0.08em"),
             rx.hstack(
-                rx.button("Solicitar férias", variant="soft", color_scheme="green"),
-                rx.button("Justificar ausência", variant="soft", color_scheme="green"),
-                rx.button("Consultar holerite", variant="soft", color_scheme="green"),
+                rx.link(rx.button("Gerenciar colaboradores", background="#15856d", color="white"), href="/colaboradores"),
+                rx.link(rx.button("Gerenciar departamentos", variant="soft", color_scheme="green"), href="/departamentos"),
                 spacing="3", flex_wrap="wrap", margin_top="13px",
             ),
-            background="white", border="1px solid #e1ece8", border_radius="14px", padding="20px", width="100%",
+            background="white", border="1px solid #e1ece8", border_radius="14px", padding="22px", width="100%",
+            box_shadow="0 8px 24px rgba(24, 75, 63, 0.04)",
         ),
         spacing="6", width="100%", max_width="1180px", padding=["26px 18px", "34px", "42px"],
     )
@@ -420,11 +1014,9 @@ def dashboard() -> rx.Component:
 def app_sidebar(active: str) -> rx.Component:
     items = [
         ("Visão geral", "/inicio", "inicio"),
-        ("Meu horário", "/horario", "horario"),
-        ("Minha equipe", "/equipe", "equipe"),
-        ("Solicitações", "/solicitacoes", "solicitacoes"),
-        ("Perfil", "/perfil", "perfil"),
         ("Colaboradores", "/colaboradores", "colaboradores"),
+        ("Departamentos", "/departamentos", "departamentos"),
+        ("Perfil", "/perfil", "perfil"),
     ]
     return rx.vstack(
         brand(inverted=True),
@@ -481,95 +1073,6 @@ def page_shell(active: str, title: str, subtitle: str, *content: rx.Component) -
     )
 
 
-def schedule_row(day: str, hours: str, status: str) -> rx.Component:
-    return rx.hstack(
-        rx.text(day, color="#244940", weight="medium", width="30%"),
-        rx.text(hours, color="#6f8781", font_size="0.88rem", width="40%"),
-        rx.box(rx.text(status, color="#17745f", font_size="0.72rem", weight="bold"), padding="5px 9px",
-               border_radius="full", background="#e0f4ed"),
-        width="100%", padding="13px 0", align="center",
-    )
-
-
-def horario() -> rx.Component:
-    calendar = panel(
-        rx.hstack(rx.text("Meu horário semanal", color="#20473e", weight="bold", font_size="1.05rem"),
-                  rx.button("Outubro 2026", variant="soft", color_scheme="green", margin_left="auto"), width="100%"),
-        schedule_row("Segunda", "08:00 — 12:00 · 13:00 — 17:00", "Presencial"), rx.divider(border_color="#edf2f0"),
-        schedule_row("Terça", "08:00 — 12:00 · 13:00 — 17:00", "Remoto"), rx.divider(border_color="#edf2f0"),
-        schedule_row("Quarta", "08:00 — 12:00 · 13:00 — 17:00", "Presencial"), rx.divider(border_color="#edf2f0"),
-        schedule_row("Quinta", "08:00 — 12:00 · 13:00 — 17:00", "Presencial"), rx.divider(border_color="#edf2f0"),
-        schedule_row("Sexta", "08:00 — 12:00 · 13:00 — 17:00", "Remoto"),
-    )
-    balance = panel(
-        rx.text("Resumo do período", color="#20473e", weight="bold", font_size="1.05rem"),
-        rx.vstack(
-            rx.hstack(rx.text("Horas previstas", color="#6d8780"), rx.text("176h", color="#244940", weight="bold", margin_left="auto"), width="100%"),
-            rx.hstack(rx.text("Horas realizadas", color="#6d8780"), rx.text("178h 15min", color="#244940", weight="bold", margin_left="auto"), width="100%"),
-            rx.hstack(rx.text("Saldo", color="#6d8780"), rx.text("+ 02h 15min", color="#17846c", weight="bold", margin_left="auto"), width="100%"),
-            spacing="4", margin_top="22px", width="100%",
-        ),
-    )
-    return page_shell("horario", "Meu horário", "Acompanhe sua escala, jornada e banco de horas.",
-                      rx.grid(calendar, balance, columns=rx.breakpoints(initial="1", lg="2"), spacing="4", width="100%"))
-
-
-def request_row(kind: str, period: str, status: str, tone: str) -> rx.Component:
-    return rx.hstack(
-        rx.vstack(rx.text(kind, color="#244940", weight="medium"), rx.text(period, color="#849791", font_size="0.78rem"), spacing="1", align_items="start"),
-        rx.box(rx.text(status, color=tone, font_size="0.72rem", weight="bold"), padding="6px 10px", border_radius="full", background="#edf6f3"),
-        rx.text("Ver detalhes", color="#17846c", font_size="0.8rem", margin_left="auto"),
-        width="100%", padding="12px 0", align="center",
-    )
-
-
-def solicitacoes() -> rx.Component:
-    requests = panel(
-        rx.hstack(rx.text("Minhas solicitações", color="#20473e", weight="bold", font_size="1.05rem"),
-                  rx.button("Nova solicitação", background="#15856d", color="white", margin_left="auto"), width="100%"),
-        request_row("Férias", "14 a 25 de dezembro · 12 dias", "Em análise", "#b77b24"), rx.divider(border_color="#edf2f0"),
-        request_row("Ajuste de ponto", "03 de outubro · Entrada", "Aprovado", "#17745f"), rx.divider(border_color="#edf2f0"),
-        request_row("Comprovante médico", "18 de setembro · 1 dia", "Concluído", "#17745f"),
-    )
-    vacation = panel(
-        rx.text("Férias", color="#20473e", weight="bold", font_size="1.05rem"),
-        rx.text("12 dias disponíveis", color="#173e36", font_size="1.65rem", weight="bold", margin_top="20px"),
-        rx.text("Período aquisitivo: 01/03/2026 a 28/02/2027", color="#82978f", font_size="0.8rem", margin_top="4px"),
-        rx.button("Planejar férias", variant="soft", color_scheme="green", width="100%", margin_top="22px"),
-    )
-    return page_shell("solicitacoes", "Solicitações e férias", "Envie, acompanhe e consulte suas solicitações.",
-                      rx.grid(requests, vacation, columns=rx.breakpoints(initial="1", lg="2"), spacing="4", width="100%"))
-
-
-def person_row(name: str, role: str, status: str) -> rx.Component:
-    initials = "".join(word[0] for word in name.split()[:2])
-    return rx.hstack(
-        rx.box(rx.text(initials, color="#176f5d", weight="bold", font_size="0.76rem"), width="38px", height="38px", border_radius="full",
-               background="#d9f1ea", display="flex", align_items="center", justify_content="center"),
-        rx.vstack(rx.text(name, color="#244940", weight="medium"), rx.text(role, color="#849791", font_size="0.78rem"), spacing="0", align_items="start"),
-        rx.box(rx.text(status, color="#17745f", font_size="0.72rem", weight="bold"), padding="5px 9px", border_radius="full", background="#e0f4ed", margin_left="auto"),
-        width="100%", padding="10px 0", align="center",
-    )
-
-
-def equipe() -> rx.Component:
-    team = panel(
-        rx.hstack(rx.text("Equipe de Produto", color="#20473e", weight="bold", font_size="1.05rem"),
-                  rx.text("8 pessoas", color="#78918a", font_size="0.82rem", margin_left="auto"), width="100%"),
-        person_row("Marina Nunes", "Analista de Produto", "Em jornada"), rx.divider(border_color="#edf2f0"),
-        person_row("Rafael Costa", "Product Manager", "Em jornada"), rx.divider(border_color="#edf2f0"),
-        person_row("Camila Souza", "UX Designer", "Remoto"), rx.divider(border_color="#edf2f0"),
-        person_row("André Lima", "Desenvolvedor", "Férias"),
-    )
-    manager = panel(
-        rx.text("Sua liderança", color="#20473e", weight="bold", font_size="1.05rem"),
-        person_row("Rafael Costa", "Product Manager", "Disponível"),
-        rx.button("Enviar mensagem", variant="soft", color_scheme="green", width="100%", margin_top="15px"),
-    )
-    return page_shell("equipe", "Minha equipe", "Conheça a composição e disponibilidade da sua equipe.",
-                      rx.grid(team, manager, columns=rx.breakpoints(initial="1", lg="2"), spacing="4", width="100%"))
-
-
 def perfil() -> rx.Component:
     personal = panel(
         rx.hstack(rx.text("Dados pessoais", color="#20473e", weight="bold", font_size="1.05rem"), rx.button("Editar", variant="ghost", color="#17846c", margin_left="auto"), width="100%"),
@@ -594,22 +1097,448 @@ def perfil() -> rx.Component:
 
 
 def colaboradores() -> rx.Component:
+    user_select = rx.select.root(
+        rx.select.trigger(
+            placeholder="Selecione uma conta existente",
+            width="100%",
+        ),
+        rx.select.content(
+            rx.select.group(
+                rx.foreach(
+                    State.employee_user_options,
+                    lambda option: rx.select.item(
+                        option["label"],
+                        value=option["id"],
+                    ),
+                ),
+            ),
+        ),
+        value=State.employee_form_user_id,
+        on_change=State.set_employee_form_user_id,
+        position="popper",
+        width="100%",
+    )
+    department_select = rx.select.root(
+        rx.select.trigger(
+            placeholder="Selecione um departamento",
+            width="100%",
+        ),
+        rx.select.content(
+            rx.select.group(
+                rx.foreach(
+                    State.employee_department_options,
+                    lambda option: rx.select.item(
+                        option["label"],
+                        value=option["id"],
+                    ),
+                ),
+            ),
+        ),
+        value=State.employee_form_department_id,
+        on_change=State.set_employee_form_department_id,
+        position="popper",
+        width="100%",
+    )
+    employee_form = rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Novo colaborador"),
+            rx.dialog.description(
+                "Informe o nome e os dados profissionais do colaborador."
+            ),
+            rx.cond(
+                State.employee_form_status == "loading",
+                rx.hstack(
+                    rx.spinner(color="#15856d"),
+                    rx.text("Carregando opções...", color="#78918a"),
+                    spacing="3",
+                    padding="20px 0",
+                ),
+                rx.vstack(
+                    rx.cond(
+                        State.employee_form_error != "",
+                        rx.text(
+                            State.employee_form_error,
+                            color="#a33b32",
+                            width="100%",
+                        ),
+                        rx.fragment(),
+                    ),
+                    rx.cond(
+                        State.employee_user_options == [],
+                        rx.text(
+                            "Não há contas disponíveis para vincular.",
+                            color="#78918a",
+                            width="100%",
+                        ),
+                        rx.fragment(),
+                    ),
+                    rx.vstack(
+                        rx.text(
+                            "Conta existente",
+                            weight="medium",
+                            color="#35534c",
+                            font_size="0.9rem",
+                        ),
+                        user_select,
+                        spacing="2",
+                        width="100%",
+                    ),
+                    rx.vstack(
+                        rx.text(
+                            "Nome completo",
+                            weight="medium",
+                            color="#35534c",
+                            font_size="0.9rem",
+                        ),
+                        rx.input(
+                            placeholder="Ex.: Maria da Silva",
+                            value=State.employee_form_name,
+                            on_change=State.set_employee_form_name,
+                            width="100%",
+                        ),
+                        spacing="2",
+                        width="100%",
+                    ),
+                    rx.vstack(
+                        rx.text(
+                            "Departamento",
+                            weight="medium",
+                            color="#35534c",
+                            font_size="0.9rem",
+                        ),
+                        department_select,
+                        spacing="2",
+                        width="100%",
+                    ),
+                    rx.vstack(
+                        rx.text(
+                            "Cargo (opcional)",
+                            weight="medium",
+                            color="#35534c",
+                            font_size="0.9rem",
+                        ),
+                        rx.input(
+                            placeholder="Ex.: Analista",
+                            value=State.employee_form_job_title,
+                            on_change=State.set_employee_form_job_title,
+                            width="100%",
+                        ),
+                        spacing="2",
+                        width="100%",
+                    ),
+                    rx.vstack(
+                        rx.text(
+                            "Data de admissão (opcional)",
+                            weight="medium",
+                            color="#35534c",
+                            font_size="0.9rem",
+                        ),
+                        rx.input(
+                            type="date",
+                            value=State.employee_form_admission_date,
+                            on_change=State.set_employee_form_admission_date,
+                            width="100%",
+                        ),
+                        spacing="2",
+                        width="100%",
+                    ),
+                    rx.hstack(
+                        rx.button(
+                            "Cancelar",
+                            type="button",
+                            variant="soft",
+                            color_scheme="gray",
+                            on_click=State.handle_employee_form_open_change(
+                                False
+                            ),
+                        ),
+                        rx.button(
+                            rx.cond(
+                                State.employee_form_status == "saving",
+                                "Salvando...",
+                                "Salvar funcionário",
+                            ),
+                            type="button",
+                            on_click=State.submit_employee,
+                            disabled=(
+                                (State.employee_form_status == "saving")
+                                | (State.employee_department_options == [])
+                                | (State.employee_user_options == [])
+                            ),
+                            background="#15856d",
+                            color="white",
+                        ),
+                        justify="end",
+                        width="100%",
+                        spacing="3",
+                        padding_top="12px",
+                    ),
+                    spacing="4",
+                    width="100%",
+                ),
+            ),
+            max_width="520px",
+            width="calc(100vw - 32px)",
+        ),
+        open=State.employee_form_open,
+        on_open_change=State.handle_employee_form_open_change,
+    )
+    edit_employee_dialog = rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Editar colaborador"),
+            rx.dialog.description("Atualize os dados funcionais ou a situação do colaborador."),
+            rx.cond(
+                State.edit_employee_status_state == "loading",
+                rx.hstack(
+                    rx.spinner(color="#15856d"),
+                    rx.text("Carregando dados...", color="#78918a"),
+                    spacing="3",
+                    padding="20px 0",
+                ),
+                rx.vstack(
+                    rx.cond(
+                        State.edit_employee_error != "",
+                        rx.text(State.edit_employee_error, color="#a33b32", width="100%"),
+                        rx.fragment(),
+                    ),
+                    rx.vstack(
+                        rx.text("Nome completo", weight="medium", color="#35534c", font_size="0.9rem"),
+                        rx.input(
+                            value=State.edit_employee_name,
+                            on_change=State.set_edit_employee_name,
+                            width="100%",
+                        ),
+                        spacing="2",
+                        width="100%",
+                    ),
+                    rx.vstack(
+                        rx.text("Cargo", weight="medium", color="#35534c", font_size="0.9rem"),
+                        rx.input(
+                            value=State.edit_employee_job_title,
+                            on_change=State.set_edit_employee_job_title,
+                            width="100%",
+                        ),
+                        spacing="2",
+                        width="100%",
+                    ),
+                    rx.vstack(
+                        rx.text("Situação", weight="medium", color="#35534c", font_size="0.9rem"),
+                        rx.select.root(
+                            rx.select.trigger(width="100%"),
+                            rx.select.content(
+                                rx.select.item("Ativo", value="Ativo"),
+                                rx.select.item("Inativo", value="Inativo"),
+                                rx.select.item("Férias", value="Férias"),
+                            ),
+                            value=State.edit_employee_status,
+                            on_change=State.set_edit_employee_status,
+                            width="100%",
+                        ),
+                        spacing="2",
+                        width="100%",
+                    ),
+                    rx.hstack(
+                        rx.button(
+                            "Cancelar",
+                            type="button",
+                            variant="soft",
+                            color_scheme="gray",
+                            on_click=State.handle_edit_employee_open_change(False),
+                        ),
+                        rx.button(
+                            rx.cond(
+                                State.edit_employee_status_state == "saving",
+                                "Salvando...",
+                                "Salvar alterações",
+                            ),
+                            type="button",
+                            on_click=State.submit_edit_employee,
+                            disabled=State.edit_employee_status_state == "saving",
+                            background="#15856d",
+                            color="white",
+                        ),
+                        justify="end",
+                        width="100%",
+                        spacing="3",
+                        padding_top="12px",
+                    ),
+                    spacing="4",
+                    width="100%",
+                ),
+            ),
+            max_width="520px",
+            width="calc(100vw - 32px)",
+        ),
+        open=State.edit_employee_open,
+        on_open_change=State.handle_edit_employee_open_change,
+    )
+    active_employees_card = rx.cond(
+        State.employee_list_status == "loading",
+        summary_card(
+            "COLABORADORES ATIVOS",
+            "Carregando...",
+            "Consultando colaboradores",
+            "#38b596",
+        ),
+        rx.cond(
+            State.employee_list_status == "error",
+            summary_card(
+                "COLABORADORES ATIVOS",
+                "Indisponível",
+                "Não foi possível carregar os dados",
+                "#38b596",
+            ),
+            summary_card(
+                "COLABORADORES ATIVOS",
+                State.employee_active_count,
+                "Situação: Ativo",
+                "#38b596",
+            ),
+        ),
+    )
     metrics = rx.grid(
-        summary_card("COLABORADORES ATIVOS", "128", "4 admissões neste mês", "#38b596"),
-        summary_card("EM FÉRIAS", "7", "Próximos 30 dias", "#d69b4d"),
-        summary_card("PENDÊNCIAS", "5", "Solicitações aguardando análise", "#5989dc"),
-        columns=rx.breakpoints(initial="1", md="3"), spacing="4", width="100%",
+        active_employees_card,
+        summary_card("EM FÉRIAS", State.employee_vacation_count, "Funcionários em férias", "#d69b4d"),
+        columns=rx.breakpoints(initial="1", md="2"), spacing="4", width="100%",
     )
     directory = panel(
         rx.hstack(rx.text("Colaboradores", color="#20473e", weight="bold", font_size="1.05rem"),
-                  rx.button("Novo colaborador", background="#15856d", color="white", margin_left="auto"), width="100%"),
+                  rx.button("Novo colaborador", on_click=State.open_employee_form, background="#15856d", color="white", margin_left="auto"), width="100%"),
+        rx.cond(
+            State.employee_form_success != "",
+            rx.text(
+                State.employee_form_success,
+                color="#17745f",
+                padding="12px 0 0",
+            ),
+            rx.fragment(),
+        ),
         rx.input(placeholder="Buscar por nome, cargo ou departamento", width="100%", margin_top="18px", background="#f8fbfa"),
-        person_row("Marina Nunes", "Produto · Analista de Produto", "Ativo"), rx.divider(border_color="#edf2f0"),
-        person_row("Rafael Costa", "Produto · Product Manager", "Ativo"), rx.divider(border_color="#edf2f0"),
-        person_row("Camila Souza", "Design · UX Designer", "Ativo"), rx.divider(border_color="#edf2f0"),
-        person_row("André Lima", "Tecnologia · Desenvolvedor", "Férias"),
+        rx.cond(
+            (State.employee_list_status == "loading")
+            & (State.employee_rows == []),
+            rx.hstack(
+                rx.spinner(color="#15856d"),
+                rx.text("Carregando colaboradores...", color="#78918a"),
+                spacing="3",
+                padding="24px 0",
+            ),
+            rx.cond(
+                State.employee_rows == [],
+                rx.cond(
+                    State.employee_list_status == "error",
+                    rx.text(
+                        State.employee_list_error,
+                        color="#a33b32",
+                        padding="20px 0",
+                    ),
+                    rx.text(
+                        "Nenhum colaborador cadastrado.",
+                        color="#78918a",
+                        padding="20px 0",
+                    ),
+                ),
+                rx.vstack(
+                    rx.cond(
+                        State.employee_list_status == "loading",
+                        rx.text(
+                            "Atualizando lista...",
+                            color="#78918a",
+                            font_size="0.8rem",
+                        ),
+                        rx.fragment(),
+                    ),
+                    rx.cond(
+                        State.employee_list_status == "error",
+                        rx.text(
+                            State.employee_list_error,
+                            color="#a33b32",
+                            padding="8px 0",
+                        ),
+                        rx.fragment(),
+                    ),
+                    rx.foreach(
+                        State.employee_rows,
+                        lambda employee: rx.hstack(
+                            rx.box(
+                                rx.text(
+                                    "RH",
+                                    color="#176f5d",
+                                    weight="bold",
+                                    font_size="0.76rem",
+                                ),
+                                width="38px",
+                                height="38px",
+                                border_radius="full",
+                                background="#d9f1ea",
+                                display="flex",
+                                align_items="center",
+                                justify_content="center",
+                                flex_shrink="0",
+                            ),
+                            rx.vstack(
+                                rx.text(
+                                    employee["name"],
+                                    color="#244940",
+                                    weight="medium",
+                                ),
+                                rx.text(
+                                    employee["department"],
+                                    " · ",
+                                    employee["job_title"],
+                                    " · Admissão: ",
+                                    employee["admission_date"],
+                                    color="#849791",
+                                    font_size="0.78rem",
+                                ),
+                                spacing="0",
+                                align_items="start",
+                                min_width="0",
+                            ),
+                            rx.hstack(
+                                rx.box(
+                                    rx.text(
+                                        employee["status"],
+                                        color="#17745f",
+                                        font_size="0.72rem",
+                                        weight="bold",
+                                    ),
+                                    padding="5px 9px",
+                                    border_radius="full",
+                                    background="#e0f4ed",
+                                ),
+                                rx.button(
+                                    "Editar",
+                                    size="1",
+                                    variant="soft",
+                                    color_scheme="green",
+                                    on_click=lambda: State.open_edit_employee(employee["id"]),
+                                ),
+                                spacing="2",
+                                margin_left="auto",
+                                align="center",
+                                flex_shrink="0",
+                            ),
+                            width="100%",
+                            padding="10px 0",
+                            align="center",
+                        ),
+                    ),
+                    spacing="0",
+                    width="100%",
+                ),
+            ),
+        ),
     )
-    return page_shell("colaboradores", "Gestão de colaboradores", "Administre pessoas, vínculos, departamentos e solicitações.", metrics, directory)
+    return page_shell(
+        "colaboradores",
+        "Gestão de colaboradores",
+        "Administre pessoas, vínculos, departamentos e solicitações.",
+        metrics,
+        directory,
+        employee_form,
+        edit_employee_dialog,
+    )
 
 
 def index() -> rx.Component:
@@ -620,6 +1549,14 @@ def index() -> rx.Component:
             padding=["20px", "32px", "48px"], align="center", justify="center", background="#f4f9f7",
         ),
         width="100%", min_height="100vh", spacing="0",
+    )
+
+
+def protected_page(page: rx.Component) -> rx.Component:
+    return rx.cond(
+        State.is_authenticated,
+        page,
+        rx.center(rx.spinner(), min_height="100vh", width="100%"),
     )
 
 
@@ -634,14 +1571,203 @@ def signup() -> rx.Component:
     )
 
 
+def departamentos() -> rx.Component:
+    dept_form = rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Novo departamento"),
+            rx.dialog.description("Informe o nome do novo departamento."),
+            rx.vstack(
+                rx.cond(
+                    State.department_form_error != "",
+                    rx.text(State.department_form_error, color="#a33b32", width="100%"),
+                    rx.fragment(),
+                ),
+                rx.vstack(
+                    rx.text("Nome do departamento", weight="medium", color="#35534c", font_size="0.9rem"),
+                    rx.input(
+                        placeholder="Ex.: Engenharia",
+                        value=State.department_form_name,
+                        on_change=State.set_department_form_name,
+                        width="100%",
+                    ),
+                    spacing="2",
+                    width="100%",
+                ),
+                rx.hstack(
+                    rx.button(
+                        "Cancelar",
+                        type="button",
+                        variant="soft",
+                        color_scheme="gray",
+                        on_click=State.handle_department_form_open_change(False),
+                    ),
+                    rx.button(
+                        "Salvar departamento",
+                        type="button",
+                        on_click=State.submit_department,
+                        background="#15856d",
+                        color="white",
+                    ),
+                    justify="end",
+                    width="100%",
+                    spacing="3",
+                    padding_top="12px",
+                ),
+                spacing="4",
+                width="100%",
+            ),
+            max_width="480px",
+            width="calc(100vw - 32px)",
+        ),
+        open=State.department_form_open,
+        on_open_change=State.handle_department_form_open_change,
+    )
+
+    edit_dept_dialog = rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Editar departamento"),
+            rx.dialog.description("Atualize o nome do departamento."),
+            rx.vstack(
+                rx.cond(
+                    State.edit_department_error != "",
+                    rx.text(State.edit_department_error, color="#a33b32", width="100%"),
+                    rx.fragment(),
+                ),
+                rx.vstack(
+                    rx.text("Nome do departamento", weight="medium", color="#35534c", font_size="0.9rem"),
+                    rx.input(
+                        value=State.edit_department_name,
+                        on_change=State.set_edit_department_name,
+                        width="100%",
+                    ),
+                    spacing="2",
+                    width="100%",
+                ),
+                rx.hstack(
+                    rx.button(
+                        "Cancelar",
+                        type="button",
+                        variant="soft",
+                        color_scheme="gray",
+                        on_click=State.handle_edit_department_open_change(False),
+                    ),
+                    rx.button(
+                        "Salvar alterações",
+                        type="button",
+                        on_click=State.submit_edit_department,
+                        background="#15856d",
+                        color="white",
+                    ),
+                    justify="end",
+                    width="100%",
+                    spacing="3",
+                    padding_top="12px",
+                ),
+                spacing="4",
+                width="100%",
+            ),
+            max_width="480px",
+            width="calc(100vw - 32px)",
+        ),
+        open=State.edit_department_open,
+        on_open_change=State.handle_edit_department_open_change,
+    )
+
+    directory = panel(
+        rx.hstack(
+            rx.text("Departamentos", color="#20473e", weight="bold", font_size="1.05rem"),
+            rx.button("Novo departamento", on_click=State.open_department_form, background="#15856d", color="white", margin_left="auto"),
+            width="100%",
+        ),
+        rx.cond(
+            State.department_form_success != "",
+            rx.text(State.department_form_success, color="#17745f", padding="12px 0 0"),
+            rx.fragment(),
+        ),
+        rx.cond(
+            State.department_list_status == "loading",
+            rx.hstack(
+                rx.spinner(color="#15856d"),
+                rx.text("Carregando departamentos...", color="#78918a"),
+                spacing="3",
+                padding="24px 0",
+            ),
+            rx.cond(
+                State.department_rows == [],
+                rx.cond(
+                    State.department_list_status == "error",
+                    rx.text(State.department_list_error, color="#a33b32", padding="20px 0"),
+                    rx.text("Nenhum departamento cadastrado.", color="#78918a", padding="20px 0"),
+                ),
+                rx.vstack(
+                    rx.foreach(
+                        State.department_rows,
+                        lambda dept: rx.hstack(
+                            rx.text(dept["name"], color="#244940", weight="medium"),
+                            rx.button(
+                                "Editar",
+                                size="1",
+                                variant="soft",
+                                color_scheme="green",
+                                on_click=lambda: State.open_edit_department(dept["id"], dept["name"]),
+                                margin_left="auto",
+                            ),
+                            width="100%",
+                            padding="12px 0",
+                            border_bottom="1px solid #edf2f0",
+                            align="center",
+                        ),
+                    ),
+                    spacing="0",
+                    width="100%",
+                ),
+            ),
+        ),
+    )
+
+    return page_shell(
+        "departamentos",
+        "Gestão de departamentos",
+        "Estrutura organizacional e setores da empresa.",
+        directory,
+        dept_form,
+        edit_dept_dialog,
+    )
+
+
 app = rx.App(
     theme=rx.theme(appearance="light", has_background=True, radius="large", accent_color="green")
 )
-app.add_page(index, title="Impacta | Gestão de Pessoas")
-app.add_page(signup, route="/cadastro", title="Criar conta | Impacta")
-app.add_page(dashboard, route="/inicio", title="Início | Impacta")
-app.add_page(horario, route="/horario", title="Meu horário | Impacta")
-app.add_page(solicitacoes, route="/solicitacoes", title="Solicitações | Impacta")
-app.add_page(equipe, route="/equipe", title="Minha equipe | Impacta")
-app.add_page(perfil, route="/perfil", title="Meu perfil | Impacta")
-app.add_page(colaboradores, route="/colaboradores", title="Colaboradores | Impacta")
+app.add_page(
+    index,
+    title="Impacta | Gestão de Pessoas",
+)
+app.add_page(
+    signup,
+    route="/cadastro",
+    title="Criar conta | Impacta",
+)
+app.add_page(
+    protected_page(dashboard()),
+    route="/inicio",
+    title="Início | Impacta",
+    on_load=State.load_employees,
+)
+app.add_page(
+    protected_page(perfil()),
+    route="/perfil",
+    title="Meu perfil | Impacta",
+    on_load=State.require_auth,
+)
+app.add_page(
+    protected_page(colaboradores()),
+    route="/colaboradores",
+    title="Colaboradores | Impacta",
+    on_load=State.load_employees,
+)
+app.add_page(
+    protected_page(departamentos()),
+    route="/departamentos",
+    title="Departamentos | Impacta",
+    on_load=State.load_departments,
+)

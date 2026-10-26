@@ -1,15 +1,17 @@
 // Edit employees record
 query "employees/{employees_id}" verb=PATCH {
   api_group = "rh_api"
+  auth = "user"
 
   input {
     int employees_id? filters=min:1
-    dblink {
-      table = "employees"
-    }
   }
 
   stack {
+    function.run "RH API/authorize employee manager" {
+      input = {authenticated_user_id: $auth.id}
+    } as $authorization
+
     util.get_raw_input {
       encoding = "json"
       exclude_middleware = false
@@ -18,7 +20,7 @@ query "employees/{employees_id}" verb=PATCH {
     db.patch employees {
       field_name = "id"
       field_value = $input.employees_id
-      data = `$input|pick:($raw_input|keys)`|filter_null|filter_empty_text
+      data = $raw_input|filter_null|filter_empty_text
     } as $employees
   }
 

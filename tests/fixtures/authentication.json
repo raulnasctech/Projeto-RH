@@ -1,0 +1,50 @@
+{
+  "login_success": {
+    "status": 200,
+    "body": {
+      "authToken": "fixture-login-token",
+      "user_id": 17
+    }
+  },
+  "signup_success": {
+    "status": 200,
+    "body": {
+      "authToken": "fixture-signup-token",
+      "user_id": 18
+    }
+  },
+  "identity_success": {
+    "status": 200,
+    "body": {
+      "id": 17,
+      "name": "Usuário de teste",
+      "email": "teste@example.com"
+    }
+  },
+  "identity_signup_success": {
+    "status": 200,
+    "body": {
+      "id": 18,
+      "name": "Novo usuário",
+      "email": "novo@example.com"
+    }
+  },
+  "login_rejected": {
+    "status": 403,
+    "body": {
+      "code": "ACCESS_DENIED",
+      "message": "Invalid Credentials."
+    }
+  },
+  "signup_rejected": {
+    "status": 403,
+    "body": {
+      "code": "ACCESS_DENIED",
+      "message": "This account is already in use."
+    }
+  },
+  "identity_rejected": {
+    "status": 401,
+    "body": {}
+  }
+}

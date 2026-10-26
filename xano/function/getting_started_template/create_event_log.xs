@@ -16,15 +16,12 @@ function "Getting Started Template/create_event_log" {
   }
 
   stack {
-    // Add a new user event log entry
     db.add event_log {
       enforce_hidden_fields = false
       data = {
         created_at: "now"
-        user_id   : $input.user_id
-        account_id: $input.account_id
-        action    : $input.action
-        metadata  : $input.metadata
+        user_id: $input.user_id
+        action: $input.action
       }
     } as $new_log_entry
   }

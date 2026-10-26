@@ -7,17 +7,19 @@ table employees {
       visibility = "private"
     }
   
-    int users_id? {
-      table = "users"
+    int user_id? {
+      table = "user"
     }
-  
-    int departments_id? {
-      table = "departments"
+
+    text name? filters=trim
+
+    int departaments_id? {
+      table = "departaments"
     }
   
     text job_title? filters=trim
-    date? hire_date?
-    decimal salary?
+    date? admissao?
+    decimal salario?
     text status? filters=trim
   }
 
@@ -26,6 +28,5 @@ table employees {
     {type: "btree", field: [{name: "created_at", op: "desc"}]}
   ]
 
-  tags = ["rh-system"]
-  guid = "buvoT-0HSzXCJ_acd4hQL39nsbA"
+  guid = "77PCRmEyKGAHbXE-SCjbpIfUrDc"
 }

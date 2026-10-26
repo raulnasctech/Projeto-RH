@@ -13,6 +13,7 @@ table user {
     text cpf? filters=trim
     text celular? filters=trim
     password? password filters=min:8|minAlpha:1|minDigit:1
+    text role? filters=trim
   
     // referencia
     int papel_id? {
