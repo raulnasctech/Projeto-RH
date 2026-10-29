@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "xano": {
-      "command": "npx",
+      "command": "npx.cmd",
       "args": [
         "-y",
         "@xano/developer-mcp"
