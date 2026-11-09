@@ -6,16 +6,17 @@ table vacation_requests {
     timestamp created_at?=now {
       visibility = "private"
     }
-  
-    int employees_id? {
+
+    int employees_id {
       table = "employees"
     }
-  
-    date? start_date?
-    date? end_date?
-    text status? filters=trim
-    int approved_by? {
-      table = "users"
+
+    date start_date
+    date end_date
+    text status filters=trim
+
+    int decided_by? {
+      table = "user"
     }
   }
 
@@ -25,5 +26,5 @@ table vacation_requests {
   ]
 
   tags = ["rh-system"]
-  guid = "eXvli-vrCw2PHWMj7VVi31x_jqw"
+  guid = "KNRvKi1FemNc5fQu-zHQmYn9PTo"
 }

@@ -15,7 +15,7 @@ function "RH API/authorize employee manager" {
       error = "Acesso negado."
     }
   
-    precondition ($authenticated_user.role == "Gestor RH" || $authenticated_user.role == "" || $authenticated_user.role == null) {
+    precondition ($authenticated_user.role == "Gestor RH") {
       error_type = "accessdenied"
       error = "Acesso negado."
     }

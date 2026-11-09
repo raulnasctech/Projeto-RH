@@ -345,10 +345,14 @@ class AuthenticationServiceTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     self.assertIsNotNone(page.on_load)
                     expected_handler = (
-                        "load_employees"
+                        "load_hr_data"
                         if route in {"colaboradores", "inicio"}
                         else "load_departments"
                         if route == "departamentos"
+                        else "load_hr_data"
+                        if route == "ferias"
+                        else "load_work_schedule_page"
+                        if route == "jornadas"
                         else "require_auth"
                     )
                     self.assertEqual(page.on_load.fn.__name__, expected_handler)

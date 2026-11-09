@@ -1,4 +1,4 @@
-// Query all departments records
+// Listar departamentos para o Gestor de RH
 query departments verb=GET {
   api_group = "rh_api"
   auth = "user"
@@ -22,4 +22,5 @@ query departments verb=GET {
   }
 
   response = $departments
+  guid = "11nVvQmpC977K7RN3dm54c3OV94"
 }

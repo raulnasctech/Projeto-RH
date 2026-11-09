@@ -30,6 +30,22 @@ from Gestao_RH_Impacta.department_service import (
     list_departments,
     update_department,
 )
+from Gestao_RH_Impacta.vacation_service import (
+    VacationAccessDenied,
+    VacationRequest,
+    VacationRequestError,
+    count_current_vacation_employees,
+    create_vacation_request,
+    decide_vacation_request,
+    list_vacation_requests,
+)
+from Gestao_RH_Impacta.work_schedule_service import (
+    WorkScheduleAccessDenied,
+    WorkScheduleError,
+    empty_work_week,
+    get_work_schedule,
+    save_work_schedule,
+)
 
 
 load_dotenv()
@@ -55,6 +71,7 @@ class State(rx.State):
     employee_active_count: str = ""
     employee_total_count: str = "0"
     employee_vacation_count: str = "0"
+    vacation_count_status: str = "loading"
     employee_list_status: str = "loading"
     employee_list_error: str = ""
     employee_form_open: bool = False
@@ -86,6 +103,26 @@ class State(rx.State):
     edit_department_id: str = ""
     edit_department_name: str = ""
     edit_department_error: str = ""
+    vacation_rows: list[dict[str, str]] = []
+    vacation_list_status: str = "loading"
+    vacation_list_error: str = ""
+    vacation_form_employee_id: str = ""
+    vacation_form_start_date: str = ""
+    vacation_form_end_date: str = ""
+    vacation_form_status: str = "idle"
+    vacation_form_error: str = ""
+    vacation_form_success: str = ""
+    vacation_action_status: str = "idle"
+    vacation_action_error: str = ""
+    work_schedule_employee_id: str = ""
+    work_schedule_id: str = ""
+    work_schedule_days: list[dict[str, str]] = []
+    work_schedule_saved_days: list[dict[str, str]] = []
+    work_schedule_load_status: str = "idle"
+    work_schedule_load_error: str = ""
+    work_schedule_save_status: str = "idle"
+    work_schedule_save_error: str = ""
+    work_schedule_save_success: str = ""
 
     @rx.var
     def user_name(self) -> str:
@@ -219,6 +256,9 @@ class State(rx.State):
         self._skip_next_auth_check = False
         self.employee_rows = []
         self.employee_active_count = ""
+        self.employee_total_count = "0"
+        self.employee_vacation_count = "0"
+        self.vacation_count_status = "loading"
         self.employee_list_status = "loading"
         self.employee_list_error = ""
         self.employee_form_open = False
@@ -232,6 +272,26 @@ class State(rx.State):
         self.employee_form_department_id = ""
         self.employee_form_job_title = ""
         self.employee_form_admission_date = ""
+        self.vacation_rows = []
+        self.vacation_list_status = "loading"
+        self.vacation_list_error = ""
+        self.vacation_form_employee_id = ""
+        self.vacation_form_start_date = ""
+        self.vacation_form_end_date = ""
+        self.vacation_form_status = "idle"
+        self.vacation_form_error = ""
+        self.vacation_form_success = ""
+        self.vacation_action_status = "idle"
+        self.vacation_action_error = ""
+        self.work_schedule_employee_id = ""
+        self.work_schedule_id = ""
+        self.work_schedule_days = []
+        self.work_schedule_saved_days = []
+        self.work_schedule_load_status = "idle"
+        self.work_schedule_load_error = ""
+        self.work_schedule_save_status = "idle"
+        self.work_schedule_save_error = ""
+        self.work_schedule_save_success = ""
 
     async def require_auth(self):
         """Valida a sessao no Xano antes de apresentar paginas internas."""
@@ -313,10 +373,454 @@ class State(rx.State):
             self.employee_active_count = str(
                 sum(employee.status == "Ativo" for employee in employees)
             )
-            self.employee_vacation_count = str(
-                sum(employee.status == "Férias" for employee in employees)
-            )
             self.employee_list_status = "loaded" if employees else "empty"
+        yield
+
+    async def load_hr_data(self):
+        """Carrega dados funcionais e solicitações para as telas do RH."""
+        async for event in self.load_employees():
+            yield event
+        if not self._auth_token:
+            return
+        async for event in self.load_vacation_requests():
+            yield event
+
+    async def load_work_schedule_page(self):
+        """Valida a sessão antes de carregar colaboradores para a tela."""
+        redirect = await self.require_auth()
+        if redirect is not None:
+            yield redirect
+            return
+        async for event in self.load_employees():
+            yield event
+
+    async def select_work_schedule_employee(self, employee_id: str):
+        """Carrega somente a jornada persistida do colaborador selecionado."""
+        self.work_schedule_employee_id = employee_id
+        self.work_schedule_id = ""
+        self.work_schedule_days = []
+        self.work_schedule_saved_days = []
+        self.work_schedule_load_error = ""
+        self.work_schedule_save_error = ""
+        self.work_schedule_save_success = ""
+        self.work_schedule_save_status = "idle"
+        if not employee_id:
+            self.work_schedule_load_status = "idle"
+            return
+        if not any(row["id"] == employee_id for row in self.employee_rows):
+            self.work_schedule_load_status = "error"
+            self.work_schedule_load_error = "Selecione um colaborador existente."
+            return
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.work_schedule_load_status = "loading"
+        yield
+
+        try:
+            schedule = await get_work_schedule(
+                XANO_RH_API_URL, self._auth_token, employee_id
+            )
+        except WorkScheduleAccessDenied as error:
+            if self.work_schedule_employee_id != employee_id:
+                return
+            self.work_schedule_load_error = str(error)
+            self.work_schedule_load_status = "error"
+        except WorkScheduleError as error:
+            if self.work_schedule_employee_id != employee_id:
+                return
+            self.work_schedule_load_error = str(error)
+            self.work_schedule_load_status = "error"
+        except httpx.HTTPError:
+            if self.work_schedule_employee_id != employee_id:
+                return
+            self.work_schedule_load_error = (
+                "Não foi possível conectar ao Xano para consultar a jornada."
+            )
+            self.work_schedule_load_status = "error"
+        else:
+            if self.work_schedule_employee_id != employee_id:
+                return
+            if schedule is None:
+                self.work_schedule_days = empty_work_week()
+                self.work_schedule_load_status = "empty"
+            else:
+                self.work_schedule_id = schedule.id
+                self.work_schedule_days = [
+                    dict(day) for day in schedule.days
+                ]
+                self.work_schedule_saved_days = [
+                    dict(day) for day in schedule.days
+                ]
+                self.work_schedule_load_status = "loaded"
+
+        yield
+
+    def set_work_schedule_day_workday(self, day_name: str, is_workday: bool):
+        if self.work_schedule_save_status == "saving":
+            return
+        self.work_schedule_days = [
+            {
+                **day,
+                "is_workday": "true" if is_workday else "false",
+                **(
+                    {}
+                    if is_workday
+                    else {
+                        "start_time": "",
+                        "end_time": "",
+                        "break_start_time": "",
+                        "break_end_time": "",
+                    }
+                ),
+            }
+            if day["day"] == day_name
+            else day
+            for day in self.work_schedule_days
+        ]
+        self.work_schedule_save_error = ""
+        self.work_schedule_save_success = ""
+        if self.work_schedule_save_status == "saved":
+            self.work_schedule_save_status = "idle"
+
+    def set_work_schedule_day_field(
+        self, day_name: str, field_name: str, value: str
+    ):
+        allowed_fields = {
+            "start_time",
+            "end_time",
+            "break_start_time",
+            "break_end_time",
+        }
+        if (
+            self.work_schedule_save_status == "saving"
+            or field_name not in allowed_fields
+        ):
+            return
+        self.work_schedule_days = [
+            {**day, field_name: value} if day["day"] == day_name else day
+            for day in self.work_schedule_days
+        ]
+        self.work_schedule_save_error = ""
+        self.work_schedule_save_success = ""
+        if self.work_schedule_save_status == "saved":
+            self.work_schedule_save_status = "idle"
+
+    def restore_saved_work_schedule(self):
+        if self.work_schedule_save_status == "saving":
+            return
+        if self.work_schedule_saved_days:
+            self.work_schedule_days = [
+                dict(day) for day in self.work_schedule_saved_days
+            ]
+        else:
+            self.work_schedule_days = empty_work_week()
+        self.work_schedule_save_error = ""
+        self.work_schedule_save_success = ""
+        self.work_schedule_save_status = "idle"
+
+    async def submit_work_schedule(self):
+        """Valida e salva a semana completa sem alterar a última versão confirmada."""
+        if self.work_schedule_load_status not in {"empty", "loaded"}:
+            self.work_schedule_save_error = (
+                "Consulte uma jornada antes de tentar salvá-la."
+            )
+            self.work_schedule_save_status = "error"
+            return
+        if not any(
+            row["id"] == self.work_schedule_employee_id
+            for row in self.employee_rows
+        ):
+            self.work_schedule_save_error = "Selecione um colaborador existente."
+            self.work_schedule_save_status = "error"
+            return
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.work_schedule_save_status = "saving"
+        self.work_schedule_save_error = ""
+        self.work_schedule_save_success = ""
+        employee_id = self.work_schedule_employee_id
+        yield
+
+        try:
+            schedule = await save_work_schedule(
+                XANO_RH_API_URL,
+                self._auth_token,
+                employee_id,
+                self.work_schedule_days,
+                schedule_id=self.work_schedule_id,
+            )
+        except WorkScheduleAccessDenied as error:
+            if self.work_schedule_employee_id != employee_id:
+                return
+            self.work_schedule_save_error = str(error)
+            self.work_schedule_save_status = "error"
+        except WorkScheduleError as error:
+            if self.work_schedule_employee_id != employee_id:
+                return
+            self.work_schedule_save_error = str(error)
+            self.work_schedule_save_status = "error"
+        except httpx.HTTPError:
+            if self.work_schedule_employee_id != employee_id:
+                return
+            self.work_schedule_save_error = (
+                "Não foi possível conectar ao Xano para salvar a jornada."
+            )
+            self.work_schedule_save_status = "error"
+        else:
+            if self.work_schedule_employee_id != employee_id:
+                return
+            self.work_schedule_id = schedule.id
+            self.work_schedule_days = [dict(day) for day in schedule.days]
+            self.work_schedule_saved_days = [
+                dict(day) for day in schedule.days
+            ]
+            self.work_schedule_load_status = "loaded"
+            self.work_schedule_save_status = "saved"
+            self.work_schedule_save_success = (
+                "Jornada semanal salva e confirmada pelo Xano."
+            )
+
+        yield
+
+    async def load_vacation_requests(self):
+        """Carrega solicitações e atualiza o indicador com férias vigentes."""
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.vacation_list_status = "loading"
+        self.vacation_count_status = "loading"
+        self.vacation_list_error = ""
+        yield
+
+        try:
+            requests = await list_vacation_requests(
+                XANO_RH_API_URL, self._auth_token
+            )
+        except VacationAccessDenied as error:
+            try:
+                await get_authenticated_user(XANO_AUTH_API_URL, self._auth_token)
+            except SessionRejected:
+                self._clear_session()
+                self.error_message = "Sua sessão expirou. Entre novamente."
+                self.vacation_list_error = self.error_message
+                self.vacation_list_status = "error"
+                self.vacation_count_status = "error"
+                self.employee_vacation_count = "Indisponível"
+                yield rx.redirect("/")
+                return
+            except AuthenticationError:
+                self.vacation_list_error = (
+                    "Não foi possível validar sua sessão para consultar férias."
+                )
+                self.vacation_list_status = "error"
+                self.vacation_count_status = "error"
+                self.employee_vacation_count = "Indisponível"
+            except httpx.HTTPError:
+                self.vacation_list_error = (
+                    "Não foi possível verificar a autorização para consultar férias."
+                )
+                self.vacation_list_status = "error"
+                self.vacation_count_status = "error"
+                self.employee_vacation_count = "Indisponível"
+            else:
+                self.vacation_list_error = str(error)
+                self.vacation_list_status = "error"
+                self.vacation_count_status = "error"
+                self.employee_vacation_count = "Indisponível"
+        except VacationRequestError as error:
+            self.vacation_list_error = str(error)
+            self.vacation_list_status = "error"
+            self.vacation_count_status = "error"
+            self.employee_vacation_count = "Indisponível"
+        except httpx.HTTPError:
+            self.vacation_list_error = (
+                "Não foi possível conectar ao Xano para carregar as férias."
+            )
+            self.vacation_list_status = "error"
+            self.vacation_count_status = "error"
+            self.employee_vacation_count = "Indisponível"
+        else:
+            self.vacation_rows = [request.as_dict() for request in requests]
+            self.employee_vacation_count = str(
+                count_current_vacation_employees(requests)
+            )
+            self.vacation_list_status = "loaded" if requests else "empty"
+            self.vacation_count_status = "loaded"
+        yield
+
+    def set_vacation_form_employee_id(self, employee_id: str):
+        self.vacation_form_employee_id = employee_id
+        self.vacation_form_error = ""
+
+    def set_vacation_form_start_date(self, start_date: str):
+        self.vacation_form_start_date = start_date
+        self.vacation_form_error = ""
+
+    def set_vacation_form_end_date(self, end_date: str):
+        self.vacation_form_end_date = end_date
+        self.vacation_form_error = ""
+
+    async def submit_vacation_request(self):
+        """Registra no Xano uma solicitação de férias para um colaborador."""
+        employee = next(
+            (
+                row
+                for row in self.employee_rows
+                if row["id"] == self.vacation_form_employee_id
+            ),
+            None,
+        )
+        if employee is None:
+            self.vacation_form_error = "Selecione um colaborador existente."
+            return
+        try:
+            start_date = date.fromisoformat(self.vacation_form_start_date)
+            end_date = date.fromisoformat(self.vacation_form_end_date)
+        except ValueError:
+            self.vacation_form_error = "Informe um período de férias válido."
+            return
+        if start_date > end_date:
+            self.vacation_form_error = (
+                "A data de início não pode ser posterior à data de fim."
+            )
+            return
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.vacation_form_status = "saving"
+        self.vacation_form_error = ""
+        self.vacation_form_success = ""
+        yield
+
+        try:
+            request_id = await create_vacation_request(
+                XANO_RH_API_URL,
+                self._auth_token,
+                self.vacation_form_employee_id,
+                start_date.isoformat(),
+                end_date.isoformat(),
+            )
+        except VacationAccessDenied as error:
+            self.vacation_form_error = str(error)
+            self.vacation_form_status = "error"
+        except VacationRequestError as error:
+            self.vacation_form_error = str(error)
+            self.vacation_form_status = "error"
+        except httpx.HTTPError:
+            self.vacation_form_error = (
+                "Não foi possível conectar ao Xano para cadastrar as férias."
+            )
+            self.vacation_form_status = "error"
+        else:
+            self.vacation_form_status = "success"
+            if self.vacation_list_status in {"loaded", "empty"}:
+                request = {
+                    "id": request_id,
+                    "employee_id": employee["id"],
+                    "employee_name": employee["name"],
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
+                    "status": "Pendente",
+                }
+                self.vacation_rows = [
+                    request,
+                    *[
+                        row
+                        for row in self.vacation_rows
+                        if row["id"] != request_id
+                    ],
+                ]
+                self.vacation_list_status = "loaded"
+                self.vacation_list_error = ""
+                self.vacation_form_success = (
+                    "Solicitação cadastrada como pendente."
+                )
+            else:
+                self.vacation_form_success = (
+                    "Solicitação cadastrada como pendente. "
+                    "Atualize a listagem para consultar todos os registros."
+                )
+            self.vacation_form_employee_id = ""
+            self.vacation_form_start_date = ""
+            self.vacation_form_end_date = ""
+
+        yield
+
+    async def decide_vacation_request(self, request_id: str, status: str):
+        """Registra a decisão do RH e atualiza a listagem confirmada."""
+        current_request = next(
+            (row for row in self.vacation_rows if row["id"] == request_id),
+            None,
+        )
+        if current_request is None or current_request["status"] != "Pendente":
+            self.vacation_action_error = (
+                "A solicitação não está mais pendente. Atualize a listagem."
+            )
+            return
+        if status not in {"Aprovada", "Rejeitada"}:
+            self.vacation_action_error = "Selecione uma decisão válida."
+            return
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.vacation_action_status = "saving"
+        self.vacation_action_error = ""
+        yield
+
+        try:
+            await decide_vacation_request(
+                XANO_RH_API_URL, self._auth_token, request_id, status
+            )
+        except VacationAccessDenied as error:
+            self.vacation_action_error = str(error)
+            self.vacation_action_status = "error"
+        except VacationRequestError as error:
+            self.vacation_action_error = str(error)
+            self.vacation_action_status = "error"
+        except httpx.HTTPError:
+            self.vacation_action_error = (
+                "Não foi possível conectar ao Xano para registrar a decisão."
+            )
+            self.vacation_action_status = "error"
+        else:
+            self.vacation_rows = [
+                {**row, "status": status}
+                if row["id"] == request_id
+                else row
+                for row in self.vacation_rows
+            ]
+            requests = [
+                VacationRequest(
+                    id=row["id"],
+                    employee_id=row["employee_id"],
+                    employee_name=row["employee_name"],
+                    start_date=row["start_date"],
+                    end_date=row["end_date"],
+                    status=row["status"],
+                )
+                for row in self.vacation_rows
+            ]
+            self.employee_vacation_count = str(
+                count_current_vacation_employees(requests)
+            )
+            self.vacation_count_status = "loaded"
+            self.vacation_list_status = (
+                "loaded" if self.vacation_rows else "empty"
+            )
+            self.vacation_action_status = "idle"
+
         yield
 
     async def open_employee_form(self):
@@ -595,9 +1099,6 @@ class State(rx.State):
                 self.employee_active_count = str(
                     sum(e.status == "Ativo" for e in employees)
                 )
-                self.employee_vacation_count = str(
-                    sum(e.status == "Férias" for e in employees)
-                )
             self.edit_employee_open = False
             self.edit_employee_status_state = "idle"
 
@@ -644,10 +1145,7 @@ class State(rx.State):
             self.department_list_error = "Não foi possível conectar ao Xano."
             self.department_list_status = "error"
         else:
-            self.department_rows = [
-                {"id": str(d.get("id", "")), "name": str(d.get("nome", d.get("name", "")))}
-                for d in depts
-            ]
+            self.department_rows = depts
             self.department_list_status = "loaded" if depts else "empty"
 
         yield
@@ -676,22 +1174,25 @@ class State(rx.State):
         yield
 
         try:
-            await create_department(
+            department_id = await create_department(
                 XANO_RH_API_URL, self._auth_token, self.department_form_name
             )
-        except Exception as error:
+        except DepartmentAccessDenied as error:
             self.department_form_error = str(error)
+        except DepartmentError as error:
+            self.department_form_error = str(error)
+        except httpx.HTTPError:
+            self.department_form_error = "Não foi possível conectar ao Xano para cadastrar o departamento."
         else:
-            try:
-                depts = await list_departments(XANO_RH_API_URL, self._auth_token)
-            except Exception:
-                pass
-            else:
-                self.department_rows = [
-                    {"id": str(d.get("id", "")), "name": str(d.get("nome", d.get("name", "")))}
-                    for d in depts
-                ]
-                self.department_list_status = "loaded" if depts else "empty"
+            self.department_rows = [
+                *self.department_rows,
+                {
+                    "id": str(department_id),
+                    "name": self.department_form_name.strip(),
+                },
+            ]
+            self.department_list_status = "loaded"
+            self.department_list_error = ""
             self.department_form_open = False
             self.department_form_name = ""
             self.department_form_success = "Departamento cadastrado com sucesso."
@@ -706,6 +1207,7 @@ class State(rx.State):
         self.edit_department_id = dept_id
         self.edit_department_name = dept_name
         self.edit_department_error = ""
+        self.department_form_success = ""
         self.edit_department_open = True
         yield
 
@@ -728,20 +1230,27 @@ class State(rx.State):
                 self.edit_department_id,
                 self.edit_department_name,
             )
-        except Exception as error:
+        except DepartmentAccessDenied as error:
             self.edit_department_error = str(error)
+        except DepartmentError as error:
+            self.edit_department_error = str(error)
+        except httpx.HTTPError:
+            self.edit_department_error = "Não foi possível conectar ao Xano para atualizar o departamento."
         else:
-            try:
-                depts = await list_departments(XANO_RH_API_URL, self._auth_token)
-            except Exception:
-                pass
-            else:
-                self.department_rows = [
-                    {"id": str(d.get("id", "")), "name": str(d.get("nome", d.get("name", "")))}
-                    for d in depts
-                ]
-                self.department_list_status = "loaded" if depts else "empty"
+            updated_name = self.edit_department_name.strip()
+            self.department_rows = [
+                {
+                    "id": department["id"],
+                    "name": updated_name
+                    if department["id"] == self.edit_department_id
+                    else department["name"],
+                }
+                for department in self.department_rows
+            ]
+            self.department_list_status = "loaded" if self.department_rows else "empty"
+            self.department_list_error = ""
             self.edit_department_open = False
+            self.department_form_success = "Departamento atualizado com sucesso."
 
         yield
 
@@ -938,6 +1447,33 @@ def summary_card(title: str, value: str, description: str, accent: str) -> rx.Co
     )
 
 
+def vacation_summary_card() -> rx.Component:
+    return rx.cond(
+        State.vacation_count_status == "loading",
+        summary_card(
+            "COLABORADORES EM FÉRIAS",
+            "Carregando...",
+            "Consultando solicitações aprovadas",
+            "#d69b4d",
+        ),
+        rx.cond(
+            State.vacation_count_status == "error",
+            summary_card(
+                "COLABORADORES EM FÉRIAS",
+                "Indisponível",
+                "Não foi possível carregar os dados",
+                "#d69b4d",
+            ),
+            summary_card(
+                "COLABORADORES EM FÉRIAS",
+                State.employee_vacation_count,
+                "Férias aprovadas em andamento",
+                "#d69b4d",
+            ),
+        ),
+    )
+
+
 def event_row(time: str, title: str, detail: str, color: str) -> rx.Component:
     return rx.hstack(
         rx.box(width="10px", height="10px", border_radius="full", background=color, flex_shrink="0"),
@@ -958,6 +1494,8 @@ def dashboard() -> rx.Component:
             navigation_item("Visão geral", "/inicio", active=True),
             navigation_item("Colaboradores", "/colaboradores"),
             navigation_item("Departamentos", "/departamentos"),
+            navigation_item("Jornadas", "/jornadas"),
+            navigation_item("Férias", "/ferias"),
             navigation_item("Perfil", "/perfil"),
             spacing="2", width="100%", margin_top="46px",
         ),
@@ -992,7 +1530,7 @@ def dashboard() -> rx.Component:
         header,
         rx.grid(
             summary_card("TOTAL COLABORADORES", State.employee_total_count, "Cadastrados no sistema", "#15856d"),
-            summary_card("TOTAL COLABORADORES EM FÉRIAS", State.employee_vacation_count, "Atualmente em férias", "#d69b4d"),
+            vacation_summary_card(),
             columns=rx.breakpoints(initial="1", md="2"), spacing="4", width="100%",
         ),
         rx.box(
@@ -1000,6 +1538,8 @@ def dashboard() -> rx.Component:
             rx.hstack(
                 rx.link(rx.button("Gerenciar colaboradores", background="#15856d", color="white"), href="/colaboradores"),
                 rx.link(rx.button("Gerenciar departamentos", variant="soft", color_scheme="green"), href="/departamentos"),
+                rx.link(rx.button("Gerenciar jornadas", variant="soft", color_scheme="green"), href="/jornadas"),
+                rx.link(rx.button("Gerenciar férias", variant="soft", color_scheme="green"), href="/ferias"),
                 spacing="3", flex_wrap="wrap", margin_top="13px",
             ),
             background="white", border="1px solid #e1ece8", border_radius="14px", padding="22px", width="100%",
@@ -1016,6 +1556,8 @@ def app_sidebar(active: str) -> rx.Component:
         ("Visão geral", "/inicio", "inicio"),
         ("Colaboradores", "/colaboradores", "colaboradores"),
         ("Departamentos", "/departamentos", "departamentos"),
+        ("Jornadas", "/jornadas", "jornadas"),
+        ("Férias", "/ferias", "ferias"),
         ("Perfil", "/perfil", "perfil"),
     ]
     return rx.vstack(
@@ -1398,7 +1940,7 @@ def colaboradores() -> rx.Component:
     )
     metrics = rx.grid(
         active_employees_card,
-        summary_card("EM FÉRIAS", State.employee_vacation_count, "Funcionários em férias", "#d69b4d"),
+        vacation_summary_card(),
         columns=rx.breakpoints(initial="1", md="2"), spacing="4", width="100%",
     )
     directory = panel(
@@ -1735,6 +2277,533 @@ def departamentos() -> rx.Component:
     )
 
 
+def jornadas() -> rx.Component:
+    employee_selector = panel(
+        rx.text(
+            "Colaborador",
+            color="#20473e",
+            weight="bold",
+            font_size="1.05rem",
+        ),
+        rx.text(
+            "Selecione uma pessoa para consultar ou configurar sua semana recorrente.",
+            color="#78918a",
+            font_size="0.86rem",
+            margin_top="6px",
+        ),
+        rx.select.root(
+            rx.select.trigger(width="100%"),
+            rx.select.content(
+                rx.foreach(
+                    State.employee_rows,
+                    lambda employee: rx.select.item(
+                        employee["name"], value=employee["id"]
+                    ),
+                )
+            ),
+            value=State.work_schedule_employee_id,
+            on_change=State.select_work_schedule_employee,
+            placeholder="Selecione um colaborador",
+            width="100%",
+            margin_top="16px",
+            disabled=(
+                (State.work_schedule_load_status == "loading")
+                | (State.work_schedule_save_status == "saving")
+            ),
+        ),
+    )
+
+    day_editor = panel(
+        rx.vstack(
+            rx.hstack(
+                rx.vstack(
+                    rx.text(
+                        "Jornada semanal",
+                        color="#20473e",
+                        weight="bold",
+                        font_size="1.05rem",
+                    ),
+                    rx.text(
+                        "Os horários são salvos para os sete dias de uma só vez.",
+                        color="#78918a",
+                        font_size="0.84rem",
+                    ),
+                    spacing="1",
+                    align_items="start",
+                ),
+                rx.button(
+                    "Restaurar última versão salva",
+                    on_click=State.restore_saved_work_schedule,
+                    variant="soft",
+                    color_scheme="gray",
+                    disabled=(
+                        (State.work_schedule_saved_days == [])
+                        | (State.work_schedule_save_status == "saving")
+                    ),
+                    margin_left="auto",
+                ),
+                width="100%",
+                align="center",
+                flex_wrap="wrap",
+            ),
+            rx.cond(
+                State.work_schedule_load_status == "empty",
+                rx.text(
+                    "Este colaborador ainda não possui uma jornada. Configure os dias e salve.",
+                    color="#78918a",
+                    padding_top="12px",
+                ),
+                rx.fragment(),
+            ),
+            rx.cond(
+                State.work_schedule_save_error != "",
+                rx.text(
+                    State.work_schedule_save_error,
+                    color="#a33b32",
+                    width="100%",
+                    padding_top="10px",
+                ),
+                rx.fragment(),
+            ),
+            rx.cond(
+                State.work_schedule_save_success != "",
+                rx.text(
+                    State.work_schedule_save_success,
+                    color="#17745f",
+                    width="100%",
+                    padding_top="10px",
+                ),
+                rx.fragment(),
+            ),
+            rx.cond(
+                State.work_schedule_save_error != "",
+                rx.text(
+                    rx.cond(
+                        State.work_schedule_saved_days == [],
+                        "Nenhuma jornada foi confirmada para este colaborador.",
+                        "A última versão confirmada continua salva. Restaure-a se não quiser manter o rascunho.",
+                    ),
+                    color="#78918a",
+                    font_size="0.82rem",
+                    width="100%",
+                ),
+                rx.fragment(),
+            ),
+            rx.foreach(
+                State.work_schedule_days,
+                lambda day: rx.box(
+                    rx.vstack(
+                        rx.hstack(
+                            rx.text(
+                                day["label"],
+                                color="#244940",
+                                weight="bold",
+                            ),
+                            rx.checkbox(
+                                "Dia trabalhado",
+                                checked=day["is_workday"] == "true",
+                                on_change=lambda value: State.set_work_schedule_day_workday(
+                                    day["day"], value
+                                ),
+                                disabled=State.work_schedule_save_status == "saving",
+                                color="#15856d",
+                            ),
+                            justify="between",
+                            width="100%",
+                            align="center",
+                            flex_wrap="wrap",
+                        ),
+                        rx.cond(
+                            day["is_workday"] == "true",
+                            rx.grid(
+                                rx.vstack(
+                                    rx.text(
+                                        "Entrada",
+                                        color="#78918a",
+                                        font_size="0.82rem",
+                                    ),
+                                    rx.input(
+                                        type="time",
+                                        value=day["start_time"],
+                                        on_change=lambda value: State.set_work_schedule_day_field(
+                                            day["day"], "start_time", value
+                                        ),
+                                        disabled=State.work_schedule_save_status
+                                        == "saving",
+                                        width="100%",
+                                    ),
+                                    spacing="2",
+                                    align_items="start",
+                                ),
+                                rx.vstack(
+                                    rx.text(
+                                        "Saída",
+                                        color="#78918a",
+                                        font_size="0.82rem",
+                                    ),
+                                    rx.input(
+                                        type="time",
+                                        value=day["end_time"],
+                                        on_change=lambda value: State.set_work_schedule_day_field(
+                                            day["day"], "end_time", value
+                                        ),
+                                        disabled=State.work_schedule_save_status
+                                        == "saving",
+                                        width="100%",
+                                    ),
+                                    spacing="2",
+                                    align_items="start",
+                                ),
+                                rx.vstack(
+                                    rx.text(
+                                        "Início do intervalo (opcional)",
+                                        color="#78918a",
+                                        font_size="0.82rem",
+                                    ),
+                                    rx.input(
+                                        type="time",
+                                        value=day["break_start_time"],
+                                        on_change=lambda value: State.set_work_schedule_day_field(
+                                            day["day"], "break_start_time", value
+                                        ),
+                                        disabled=State.work_schedule_save_status
+                                        == "saving",
+                                        width="100%",
+                                    ),
+                                    spacing="2",
+                                    align_items="start",
+                                ),
+                                rx.vstack(
+                                    rx.text(
+                                        "Fim do intervalo (opcional)",
+                                        color="#78918a",
+                                        font_size="0.82rem",
+                                    ),
+                                    rx.input(
+                                        type="time",
+                                        value=day["break_end_time"],
+                                        on_change=lambda value: State.set_work_schedule_day_field(
+                                            day["day"], "break_end_time", value
+                                        ),
+                                        disabled=State.work_schedule_save_status
+                                        == "saving",
+                                        width="100%",
+                                    ),
+                                    spacing="2",
+                                    align_items="start",
+                                ),
+                                columns=rx.breakpoints(initial="1", md="2"),
+                                spacing="4",
+                                width="100%",
+                            ),
+                            rx.text(
+                                "Folga — nenhum horário será enviado.",
+                                color="#78918a",
+                                font_size="0.84rem",
+                            ),
+                        ),
+                        spacing="3",
+                        width="100%",
+                    ),
+                    padding="16px 0",
+                    border_bottom="1px solid #edf2f0",
+                    width="100%",
+                ),
+            ),
+            rx.button(
+                rx.cond(
+                    State.work_schedule_save_status == "saving",
+                    "Salvando semana...",
+                    "Salvar jornada semanal",
+                ),
+                on_click=State.submit_work_schedule,
+                disabled=State.work_schedule_save_status == "saving",
+                background="#15856d",
+                color="white",
+                margin_left="auto",
+                margin_top="8px",
+            ),
+            spacing="4",
+            width="100%",
+            align_items="start",
+        )
+    )
+
+    return page_shell(
+        "jornadas",
+        "Gestão de jornadas",
+        "Configure os dias trabalhados, folgas e horários recorrentes por colaborador.",
+        employee_selector,
+        rx.cond(
+            State.work_schedule_load_status == "loading",
+            panel(
+                rx.hstack(
+                    rx.spinner(color="#15856d"),
+                    rx.text("Consultando jornada no Xano...", color="#78918a"),
+                    spacing="3",
+                )
+            ),
+            rx.cond(
+                State.work_schedule_load_status == "error",
+                panel(
+                    rx.text(
+                        State.work_schedule_load_error,
+                        color="#a33b32",
+                    )
+                ),
+                rx.cond(
+                    (State.work_schedule_load_status == "empty")
+                    | (State.work_schedule_load_status == "loaded"),
+                    day_editor,
+                    rx.fragment(),
+                ),
+            ),
+        ),
+    )
+
+
+def ferias() -> rx.Component:
+    request_form = panel(
+        rx.text(
+            "Nova solicitação",
+            color="#20473e",
+            weight="bold",
+            font_size="1.05rem",
+        ),
+        rx.cond(
+            State.vacation_form_success != "",
+            rx.text(
+                State.vacation_form_success,
+                color="#17745f",
+                padding_top="12px",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            State.vacation_form_error != "",
+            rx.text(
+                State.vacation_form_error,
+                color="#a33b32",
+                padding_top="12px",
+            ),
+            rx.fragment(),
+        ),
+        rx.vstack(
+            rx.text(
+                "Colaborador",
+                weight="medium",
+                color="#35534c",
+                font_size="0.9rem",
+            ),
+            rx.select.root(
+                rx.select.trigger(width="100%"),
+                rx.select.content(
+                    rx.foreach(
+                        State.employee_rows,
+                        lambda employee: rx.select.item(
+                            employee["name"], value=employee["id"]
+                        ),
+                    )
+                ),
+                value=State.vacation_form_employee_id,
+                on_change=State.set_vacation_form_employee_id,
+                placeholder="Selecione um colaborador",
+                width="100%",
+            ),
+            rx.hstack(
+                rx.vstack(
+                    rx.text(
+                        "Início das férias",
+                        weight="medium",
+                        color="#35534c",
+                        font_size="0.9rem",
+                    ),
+                    rx.input(
+                        type="date",
+                        value=State.vacation_form_start_date,
+                        on_change=State.set_vacation_form_start_date,
+                        width="100%",
+                    ),
+                    width="100%",
+                    spacing="2",
+                    align_items="start",
+                ),
+                rx.vstack(
+                    rx.text(
+                        "Fim das férias",
+                        weight="medium",
+                        color="#35534c",
+                        font_size="0.9rem",
+                    ),
+                    rx.input(
+                        type="date",
+                        value=State.vacation_form_end_date,
+                        on_change=State.set_vacation_form_end_date,
+                        width="100%",
+                    ),
+                    width="100%",
+                    spacing="2",
+                    align_items="start",
+                ),
+                width="100%",
+                spacing="4",
+                flex_wrap="wrap",
+            ),
+            rx.button(
+                rx.cond(
+                    State.vacation_form_status == "saving",
+                    "Salvando...",
+                    "Cadastrar solicitação",
+                ),
+                on_click=State.submit_vacation_request,
+                disabled=(
+                    (State.vacation_form_status == "saving")
+                    | (State.employee_rows == [])
+                ),
+                background="#15856d",
+                color="white",
+                margin_left="auto",
+            ),
+            width="100%",
+            spacing="4",
+            margin_top="18px",
+        ),
+    )
+
+    requests_directory = panel(
+        rx.hstack(
+            rx.text(
+                "Solicitações de férias",
+                color="#20473e",
+                weight="bold",
+                font_size="1.05rem",
+            ),
+            rx.button(
+                "Atualizar",
+                on_click=State.load_vacation_requests,
+                variant="soft",
+                color_scheme="green",
+                margin_left="auto",
+            ),
+            width="100%",
+        ),
+        rx.cond(
+            State.vacation_action_error != "",
+            rx.text(
+                State.vacation_action_error,
+                color="#a33b32",
+                padding="12px 0",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            State.vacation_list_status == "loading",
+            rx.hstack(
+                rx.spinner(color="#15856d"),
+                rx.text("Carregando solicitações...", color="#78918a"),
+                spacing="3",
+                padding="24px 0",
+            ),
+            rx.cond(
+                State.vacation_list_status == "error",
+                rx.text(
+                    State.vacation_list_error,
+                    color="#a33b32",
+                    padding="20px 0",
+                ),
+                rx.cond(
+                    State.vacation_rows == [],
+                    rx.text(
+                        "Nenhuma solicitação de férias cadastrada.",
+                        color="#78918a",
+                        padding="20px 0",
+                    ),
+                    rx.vstack(
+                        rx.foreach(
+                            State.vacation_rows,
+                            lambda request: rx.hstack(
+                                rx.vstack(
+                                    rx.text(
+                                        request["employee_name"],
+                                        color="#244940",
+                                        weight="medium",
+                                    ),
+                                    rx.text(
+                                        request["start_date"],
+                                        " a ",
+                                        request["end_date"],
+                                        color="#849791",
+                                        font_size="0.82rem",
+                                    ),
+                                    spacing="1",
+                                    align_items="start",
+                                ),
+                                rx.text(
+                                    request["status"],
+                                    color="#17745f",
+                                    weight="medium",
+                                    font_size="0.82rem",
+                                ),
+                                rx.cond(
+                                    request["status"] == "Pendente",
+                                    rx.hstack(
+                                        rx.button(
+                                            "Aprovar",
+                                            size="1",
+                                            on_click=lambda: State.decide_vacation_request(
+                                                request["id"], "Aprovada"
+                                            ),
+                                            disabled=(
+                                                State.vacation_action_status
+                                                == "saving"
+                                            ),
+                                            background="#15856d",
+                                            color="white",
+                                        ),
+                                        rx.button(
+                                            "Rejeitar",
+                                            size="1",
+                                            on_click=lambda: State.decide_vacation_request(
+                                                request["id"], "Rejeitada"
+                                            ),
+                                            disabled=(
+                                                State.vacation_action_status
+                                                == "saving"
+                                            ),
+                                            variant="soft",
+                                            color_scheme="red",
+                                        ),
+                                        spacing="2",
+                                    ),
+                                    rx.fragment(),
+                                ),
+                                width="100%",
+                                padding="12px 0",
+                                border_bottom="1px solid #edf2f0",
+                                align="center",
+                                justify="between",
+                                flex_wrap="wrap",
+                                spacing="3",
+                            ),
+                        ),
+                        spacing="0",
+                        width="100%",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    return page_shell(
+        "ferias",
+        "Gestão de férias",
+        "Cadastre períodos e decida solicitações dos colaboradores.",
+        vacation_summary_card(),
+        request_form,
+        requests_directory,
+    )
+
+
 app = rx.App(
     theme=rx.theme(appearance="light", has_background=True, radius="large", accent_color="green")
 )
@@ -1751,7 +2820,7 @@ app.add_page(
     protected_page(dashboard()),
     route="/inicio",
     title="Início | Impacta",
-    on_load=State.load_employees,
+    on_load=State.load_hr_data,
 )
 app.add_page(
     protected_page(perfil()),
@@ -1763,11 +2832,23 @@ app.add_page(
     protected_page(colaboradores()),
     route="/colaboradores",
     title="Colaboradores | Impacta",
-    on_load=State.load_employees,
+    on_load=State.load_hr_data,
 )
 app.add_page(
     protected_page(departamentos()),
     route="/departamentos",
     title="Departamentos | Impacta",
     on_load=State.load_departments,
+)
+app.add_page(
+    protected_page(jornadas()),
+    route="/jornadas",
+    title="Gestão de jornadas | Impacta",
+    on_load=State.load_work_schedule_page,
+)
+app.add_page(
+    protected_page(ferias()),
+    route="/ferias",
+    title="Gestão de férias | Impacta",
+    on_load=State.load_hr_data,
 )

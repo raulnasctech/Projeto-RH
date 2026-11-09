@@ -18,6 +18,13 @@ EMPLOYEE_ENDPOINTS = (
 EMPLOYEE_FORM_OPTIONS_ENDPOINT = (
     ROOT / "xano" / "api" / "rh_api" / "employees_form_options_GET.xs"
 )
+DEPARTMENT_ENDPOINTS = (
+    ROOT / "xano" / "api" / "rh_api" / "departments_GET.xs",
+    ROOT / "xano" / "api" / "rh_api" / "departments_POST.xs",
+    ROOT / "xano" / "api" / "rh_api" / "departments" / "departments_id_GET.xs",
+    ROOT / "xano" / "api" / "rh_api" / "departments" / "departments_id_PATCH.xs",
+    ROOT / "xano" / "api" / "rh_api" / "departments" / "departments_id_DELETE.xs",
+)
 
 
 class EmployeeAuthorizationContractTests(unittest.TestCase):
@@ -27,8 +34,57 @@ class EmployeeAuthorizationContractTests(unittest.TestCase):
         self.assertIn('db.get user {', source)
         self.assertIn('output = ["role"]', source)
         self.assertIn('$authenticated_user.role == "Gestor RH"', source)
+        self.assertNotIn('$authenticated_user.role == ""', source)
+        self.assertNotIn("$authenticated_user.role == null", source)
         self.assertIn('error_type = "accessdenied"', source)
         self.assertNotIn("db.query users", source)
+
+    def test_department_endpoints_require_and_authorize_gestor_rh(self):
+        for endpoint in DEPARTMENT_ENDPOINTS:
+            with self.subTest(endpoint=endpoint.name):
+                source = endpoint.read_text(encoding="utf-8")
+                authorization_call = source.index(
+                    'function.run "RH API/authorize employee manager"'
+                )
+                first_department_access = re.search(
+                    r"^\s*db\.(?:query|get|add|patch|del) departaments\b",
+                    source,
+                    re.MULTILINE,
+                )
+
+                self.assertIn('auth = "user"', source)
+                self.assertIsNotNone(first_department_access)
+                self.assertLess(authorization_call, first_department_access.start())
+                self.assertIn(
+                    "authenticated_user_id: $auth.id",
+                    source[authorization_call : first_department_access.start()],
+                )
+
+    def test_department_endpoints_use_employee_department_table_and_fields(self):
+        list_source = DEPARTMENT_ENDPOINTS[0].read_text(encoding="utf-8")
+        create_source = DEPARTMENT_ENDPOINTS[1].read_text(encoding="utf-8")
+        update_source = DEPARTMENT_ENDPOINTS[3].read_text(encoding="utf-8")
+
+        self.assertIn("db.query departaments", list_source)
+        self.assertIn("$db.departaments.nome", list_source)
+        self.assertIn("db.add departaments", create_source)
+        self.assertIn("util.get_raw_input {", create_source)
+        self.assertIn("} as $input", create_source)
+        self.assertIn('$input.nome != ""', create_source)
+        self.assertIn("nome: $input.nome", create_source)
+        self.assertIn("db.patch departaments", update_source)
+        self.assertIn("data = {nome: $input.nome}", update_source)
+
+    def test_department_endpoints_keep_existing_xano_resource_guids(self):
+        expected_guids = {
+            DEPARTMENT_ENDPOINTS[0]: "11nVvQmpC977K7RN3dm54c3OV94",
+            DEPARTMENT_ENDPOINTS[1]: "wMw7WYJAPBzLFTh68hqJTeJHL0w",
+            DEPARTMENT_ENDPOINTS[3]: "X3gTRFgiE_k6oe4z5XYaafHY4co",
+        }
+        for endpoint, expected_guid in expected_guids.items():
+            with self.subTest(endpoint=endpoint.name):
+                source = endpoint.read_text(encoding="utf-8")
+                self.assertIn(f'guid = "{expected_guid}"', source)
 
     def test_user_schema_defines_an_optional_role(self):
         user_schema = (ROOT / "xano" / "table" / "user.xs").read_text(

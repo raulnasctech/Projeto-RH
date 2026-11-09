@@ -248,7 +248,11 @@ class EmployeeListStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("State.employee_list_status", source)
         self.assertIn("State.employee_active_count", source)
         self.assertIn("COLABORADORES ATIVOS", source)
-        self.assertIn("EM FÉRIAS", source)
+        self.assertIn("vacation_summary_card()", source)
+        self.assertIn(
+            "State.employee_vacation_count",
+            inspect.getsource(app_module.vacation_summary_card),
+        )
         self.assertNotIn("PENDÊNCIAS", source)
         self.assertNotIn("Marina Nunes", source)
         self.assertNotIn("Rafael Costa", source)

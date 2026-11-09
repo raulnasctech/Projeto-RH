@@ -1,4 +1,4 @@
-// Add departments record
+// Cadastrar departamento para o Gestor de RH
 query departments verb=POST {
   api_group = "rh_api"
   auth = "user"
@@ -15,9 +15,9 @@ query departments verb=POST {
     util.get_raw_input {
       encoding = "json"
       exclude_middleware = false
-    } as $raw_input
+    } as $input
 
-    precondition ($raw_input.nome != "") {
+    precondition ($input.nome != "") {
       error_type = "badrequest"
       error = "Informe o nome do departamento."
     }
@@ -25,7 +25,7 @@ query departments verb=POST {
     db.add departaments {
       enforce_hidden_fields = false
       data = {
-        nome: $raw_input.nome
+        nome: $input.nome
       }
     } as $departments
   }
@@ -34,4 +34,5 @@ query departments verb=POST {
     id: $departments.id,
     name: $departments.nome
   }
+  guid = "wMw7WYJAPBzLFTh68hqJTeJHL0w"
 }
