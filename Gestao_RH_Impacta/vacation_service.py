@@ -158,6 +158,24 @@ async def list_vacation_requests(
     return [_parse_vacation_request(record) for record in data]
 
 
+async def list_my_vacation_requests(
+    api_url: str, token: str
+) -> list[VacationRequest]:
+    """Lista somente solicitações do funcionário autenticado."""
+    normalized_url = _validate_api_url(api_url)
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = await client.get(
+            f"{normalized_url}/my_vacation_requests",
+            headers=_authorization_headers(token),
+        )
+    data = _parse_response(response, "consultar suas solicitações de férias")
+    if not isinstance(data, list):
+        raise VacationRequestError(
+            "A API retornou um formato inválido para solicitações de férias."
+        )
+    return [_parse_vacation_request(record) for record in data]
+
+
 async def create_vacation_request(
     api_url: str,
     token: str,
@@ -181,6 +199,38 @@ async def create_vacation_request(
             headers=_authorization_headers(token),
             json={
                 "employees_id": int(parsed_employee_id),
+                "start_date": normalized_start_date,
+                "end_date": normalized_end_date,
+            },
+        )
+    data = _parse_response(response, "cadastrar a solicitação de férias")
+    if not isinstance(data, dict):
+        raise VacationRequestError(
+            "A API não confirmou a solicitação de férias."
+        )
+    return _parse_id(data.get("id"), "solicitação")
+
+
+async def create_my_vacation_request(
+    api_url: str,
+    token: str,
+    start_date: str,
+    end_date: str,
+) -> str:
+    """Cria uma solicitação pendente para o funcionário autenticado."""
+    normalized_url = _validate_api_url(api_url)
+    normalized_start_date = _parse_date(start_date, "início")
+    normalized_end_date = _parse_date(end_date, "fim")
+    if normalized_start_date > normalized_end_date:
+        raise VacationRequestError(
+            "A data de início não pode ser posterior à data de fim."
+        )
+
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+        response = await client.post(
+            f"{normalized_url}/my_vacation_requests",
+            headers=_authorization_headers(token),
+            json={
                 "start_date": normalized_start_date,
                 "end_date": normalized_end_date,
             },

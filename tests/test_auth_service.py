@@ -61,6 +61,7 @@ class AuthenticationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(user.token, "fixture-login-token")
         self.assertEqual(user.user_name, "Usuário de teste")
+        self.assertEqual(user.user_role, "Gestor RH")
         self.assertEqual(client.calls[0][0], "POST")
         self.assertEqual(client.calls[1][0], "GET")
         self.assertEqual(
@@ -238,7 +239,9 @@ class AuthenticationServiceTests(unittest.IsolatedAsyncioTestCase):
             app_module,
             "authenticate",
             return_value=auth_service.AuthenticatedUser(
-                token="fixture-token", user_name="Usuário de teste"
+                token="fixture-token",
+                user_name="Usuário de teste",
+                user_role="Gestor RH",
             ),
         ):
             self.assertTrue(
@@ -250,9 +253,19 @@ class AuthenticationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state._auth_token, "fixture-token")
         self.assertEqual(state.user_name, "Usuário de teste")
+        self.assertEqual(state.user_role, "Gestor RH")
         self.assertTrue(state.is_authenticated)
         self.assertTrue(state._skip_next_auth_check)
         self.assertEqual(state._password, "")
+
+    async def test_home_route_uses_authenticated_profile(self):
+        state = app_module.State(_reflex_internal_init=True)
+
+        state._auth_user_role = "Gestor RH"
+        self.assertEqual(state._home_route(), "/inicio")
+
+        state._auth_user_role = "Colaborador"
+        self.assertEqual(state._home_route(), "/ponto")
 
     async def test_first_page_load_skips_duplicate_identity_request_after_login(self):
         state = app_module.State(_reflex_internal_init=True)
@@ -290,6 +303,7 @@ class AuthenticationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state._auth_token, "")
         self.assertEqual(state.user_name, "")
+        self.assertEqual(state.user_role, "")
         self.assertFalse(state.is_authenticated)
         self.assertFalse(state._skip_next_auth_check)
         self.assertEqual(state._password, "")
@@ -353,6 +367,12 @@ class AuthenticationServiceTests(unittest.IsolatedAsyncioTestCase):
                         if route == "ferias"
                         else "load_work_schedule_page"
                         if route == "jornadas"
+                        else "require_hr_auth"
+                        if route == "perfil"
+                        else "load_my_attendance"
+                        if route == "ponto"
+                        else "load_attendance_dashboard"
+                        if route == "assiduidade"
                         else "require_auth"
                     )
                     self.assertEqual(page.on_load.fn.__name__, expected_handler)

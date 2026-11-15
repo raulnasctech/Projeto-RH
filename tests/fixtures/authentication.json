@@ -18,7 +18,8 @@
     "body": {
       "id": 17,
       "name": "Usuário de teste",
-      "email": "teste@example.com"
+      "email": "teste@example.com",
+      "role": "Gestor RH"
     }
   },
   "identity_signup_success": {
@@ -26,7 +27,8 @@
     "body": {
       "id": 18,
       "name": "Novo usuário",
-      "email": "novo@example.com"
+      "email": "novo@example.com",
+      "role": "Colaborador"
     }
   },
   "login_rejected": {

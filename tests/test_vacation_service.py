@@ -82,6 +82,39 @@ class VacationServiceTests(unittest.IsolatedAsyncioTestCase):
             "Bearer fixture-token",
         )
 
+    async def test_lists_own_requests_from_employee_endpoint(self):
+        client = FakeAsyncClient(
+            httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": 8,
+                        "employees_id": 3,
+                        "start_date": "2026-11-07",
+                        "end_date": "2026-11-20",
+                        "status": "Pendente",
+                    }
+                ],
+            )
+        )
+        with patch.object(
+            vacation_service.httpx, "AsyncClient", return_value=client
+        ):
+            requests = await vacation_service.list_my_vacation_requests(
+                "https://example.xano.io/api:rh/", "fixture-token"
+            )
+
+        self.assertEqual(requests[0].id, "8")
+        self.assertEqual(requests[0].status, "Pendente")
+        self.assertEqual(
+            client.calls[0][1],
+            "https://example.xano.io/api:rh/my_vacation_requests",
+        )
+        self.assertEqual(
+            client.calls[0][2]["headers"]["Authorization"],
+            "Bearer fixture-token",
+        )
+
     async def test_rejects_malformed_list_and_record_data(self):
         payloads = (
             {"items": []},
@@ -162,6 +195,42 @@ class VacationServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("status", client.calls[0][2]["json"])
         self.assertNotIn("decided_by", client.calls[0][2]["json"])
+
+    async def test_creates_own_request_without_employee_identifier(self):
+        client = FakeAsyncClient(httpx.Response(200, json={"id": 16}))
+        with patch.object(
+            vacation_service.httpx, "AsyncClient", return_value=client
+        ):
+            request_id = await vacation_service.create_my_vacation_request(
+                "https://example.xano.io/api:rh",
+                "fixture-token",
+                "2026-12-01",
+                "2026-12-10",
+            )
+
+        self.assertEqual(request_id, "16")
+        self.assertEqual(
+            client.calls[0][1],
+            "https://example.xano.io/api:rh/my_vacation_requests",
+        )
+        self.assertEqual(
+            client.calls[0][2]["json"],
+            {"start_date": "2026-12-01", "end_date": "2026-12-10"},
+        )
+        self.assertNotIn("employees_id", client.calls[0][2]["json"])
+
+    async def test_rejects_missing_token_before_request(self):
+        client = FakeAsyncClient(httpx.Response(200, json=[]))
+        with (
+            patch.object(
+                vacation_service.httpx, "AsyncClient", return_value=client
+            ),
+            self.assertRaises(vacation_service.VacationAccessDenied),
+        ):
+            await vacation_service.list_my_vacation_requests(
+                "https://example.xano.io/api:rh", ""
+            )
+        self.assertEqual(client.calls, [])
 
     async def test_rejects_invalid_create_fields_before_request(self):
         client = FakeAsyncClient(httpx.Response(200, json={"id": 1}))

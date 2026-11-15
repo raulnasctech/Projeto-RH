@@ -85,6 +85,96 @@ class VacationStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.employee_vacation_count, "Indisponível")
         self.assertEqual(state.vacation_list_error, "Falha controlada.")
 
+    async def test_employee_loads_own_history_with_empty_and_error_states(self):
+        state = self.make_state()
+        state._auth_user_role = "Funcionário"
+        request = VacationRequest(
+            "19",
+            "3",
+            "Ana Souza",
+            "2026-12-01",
+            "2026-12-10",
+            "Pendente",
+        )
+        with patch.object(
+            app_module,
+            "list_my_vacation_requests",
+            return_value=[request],
+        ):
+            await run_generator(state.load_my_vacation_requests())
+
+        self.assertEqual(state.my_vacation_list_status, "loaded")
+        self.assertEqual(state.my_vacation_rows[0]["status"], "Pendente")
+        self.assertEqual(state.my_vacation_rows[0]["id"], "19")
+
+        with patch.object(
+            app_module, "list_my_vacation_requests", return_value=[]
+        ):
+            await run_generator(state.load_my_vacation_requests())
+        self.assertEqual(state.my_vacation_list_status, "empty")
+
+        with patch.object(
+            app_module,
+            "list_my_vacation_requests",
+            side_effect=VacationRequestError("Falha controlada."),
+        ):
+            await run_generator(state.load_my_vacation_requests())
+        self.assertEqual(state.my_vacation_list_status, "error")
+        self.assertEqual(
+            state.my_vacation_list_error, "Falha controlada."
+        )
+
+    async def test_employee_submission_validates_dates_before_request(self):
+        state = self.make_state()
+        state._auth_user_role = "Funcionário"
+        state.my_vacation_start_date = "2026-12-10"
+        state.my_vacation_end_date = "2026-12-01"
+        with patch.object(
+            app_module, "create_my_vacation_request"
+        ) as create_request:
+            await run_generator(state.submit_my_vacation_request())
+
+        self.assertIn("não pode ser posterior", state.my_vacation_form_error)
+        create_request.assert_not_awaited()
+
+    async def test_employee_submission_adds_confirmed_pending_request(self):
+        state = self.make_state()
+        state._auth_user_role = "Funcionário"
+        state.my_vacation_start_date = "2026-12-01"
+        state.my_vacation_end_date = "2026-12-10"
+        with (
+            patch.object(
+                app_module, "create_my_vacation_request", return_value="20"
+            ) as create_request,
+            patch.object(
+                app_module,
+                "list_my_vacation_requests",
+                return_value=[
+                    VacationRequest(
+                        "20",
+                        "3",
+                        "Ana Souza",
+                        "2026-12-01",
+                        "2026-12-10",
+                        "Pendente",
+                    )
+                ],
+            ) as list_requests,
+        ):
+            await run_generator(state.submit_my_vacation_request())
+
+        create_request.assert_awaited_once_with(
+            app_module.XANO_RH_API_URL,
+            "fixture-token",
+            "2026-12-01",
+            "2026-12-10",
+        )
+        self.assertEqual(state.my_vacation_form_status, "success")
+        list_requests.assert_awaited_once()
+        self.assertEqual(state.my_vacation_rows[0]["id"], "20")
+        self.assertEqual(state.my_vacation_rows[0]["status"], "Pendente")
+        self.assertEqual(state.my_vacation_list_status, "loaded")
+
     async def test_submit_validates_date_order_before_request(self):
         state = self.make_state()
         state.vacation_list_status = "empty"
@@ -173,6 +263,36 @@ class VacationStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Aprovar", source)
         self.assertIn("Rejeitar", source)
         self.assertNotIn("Excluir", source)
+
+    def test_vacation_page_and_employee_navigation_support_both_profiles(self):
+        page_source = inspect.getsource(app_module.ferias)
+        sidebar_source = inspect.getsource(app_module.app_sidebar)
+        loader_source = inspect.getsource(app_module.State)
+        module_source = inspect.getsource(app_module)
+        self.assertIn("State.submit_my_vacation_request", page_source)
+        self.assertIn("State.my_vacation_rows", page_source)
+        self.assertIn("State.user_role == \"Gestor RH\"", page_source)
+        self.assertIn('navigation_item("Minhas férias", "/ferias"', sidebar_source)
+        self.assertIn('self._auth_user_role == "Gestor RH"', loader_source)
+        self.assertIn("on_load=State.load_vacation_page", module_source)
+
+    def test_sidebar_removes_profile_link_and_rh_help_cards(self):
+        dashboard_source = inspect.getsource(app_module.dashboard)
+        sidebar_source = inspect.getsource(app_module.app_sidebar)
+
+        for source in (dashboard_source, sidebar_source):
+            with self.subTest(sidebar="dashboard" if source == dashboard_source else "shared"):
+                self.assertNotIn('navigation_item("Perfil", "/perfil")', source)
+                self.assertNotIn('("Perfil", "/perfil", "perfil")', source)
+                self.assertNotIn("PRECISA DE AJUDA?", source)
+                self.assertNotIn("Suporte RH", source)
+                self.assertNotIn("Fale com o RH", source)
+
+    def test_profile_route_remains_registered(self):
+        pages = app_module.app._unevaluated_pages
+
+        self.assertIn("perfil", pages)
+        self.assertIn('route="/perfil"', inspect.getsource(app_module))
 
 
 if __name__ == "__main__":

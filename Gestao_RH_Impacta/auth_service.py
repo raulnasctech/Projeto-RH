@@ -22,6 +22,7 @@ class SessionRejected(AuthenticationError):
 class AuthenticatedUser:
     token: str
     user_name: str
+    user_role: str = ""
 
 
 def _response_data(response: httpx.Response) -> dict[str, Any]:
@@ -51,7 +52,7 @@ async def _get_identity(
     api_url: str,
     token: str,
     expected_user_id: str | int | None = None,
-) -> str:
+) -> tuple[str, str]:
     response = await client.get(
         f"{api_url}/auth/me",
         headers={"Authorization": f"Bearer {token}"},
@@ -75,7 +76,13 @@ async def _get_identity(
         raise AuthenticationError(GENERIC_AUTH_ERROR)
 
     name = profile.get("name")
-    return name if isinstance(name, str) else ""
+    role = profile.get("role")
+    if role is not None and not isinstance(role, str):
+        raise AuthenticationError(GENERIC_AUTH_ERROR)
+    return (
+        name if isinstance(name, str) else "",
+        role.strip() if isinstance(role, str) else "",
+    )
 
 
 async def authenticate(
@@ -100,11 +107,21 @@ async def authenticate(
         ):
             raise AuthenticationError(GENERIC_AUTH_ERROR)
 
-        user_name = await _get_identity(client, api_url, token, user_id)
-        return AuthenticatedUser(token=token, user_name=user_name)
+        user_name, user_role = await _get_identity(
+            client, api_url, token, user_id
+        )
+        return AuthenticatedUser(
+            token=token,
+            user_name=user_name,
+            user_role=user_role,
+        )
 
 
 async def get_authenticated_user(api_url: str, token: str) -> AuthenticatedUser:
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
-        user_name = await _get_identity(client, api_url, token)
-    return AuthenticatedUser(token=token, user_name=user_name)
+        user_name, user_role = await _get_identity(client, api_url, token)
+    return AuthenticatedUser(
+        token=token,
+        user_name=user_name,
+        user_role=user_role,
+    )

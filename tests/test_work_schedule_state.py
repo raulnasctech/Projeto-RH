@@ -158,7 +158,9 @@ class WorkScheduleStateTests(unittest.IsolatedAsyncioTestCase):
         source = inspect.getsource(
             app_module.State.load_work_schedule_page.fn
         )
-        self.assertLess(source.index("require_auth"), source.index("load_employees"))
+        self.assertLess(
+            source.index("require_hr_auth"), source.index("load_employees")
+        )
 
 
 if __name__ == "__main__":

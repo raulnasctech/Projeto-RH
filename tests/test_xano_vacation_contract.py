@@ -27,6 +27,18 @@ VACATION_ENDPOINTS = (
     / "vacation_requests"
     / "vacation_requests_id_DELETE.xs",
 )
+EMPLOYEE_VACATION_ENDPOINTS = (
+    ROOT
+    / "xano"
+    / "api"
+    / "rh_api"
+    / "my_vacation_requests_GET.xs",
+    ROOT
+    / "xano"
+    / "api"
+    / "rh_api"
+    / "my_vacation_requests_POST.xs",
+)
 
 
 class VacationXanoContractTests(unittest.TestCase):
@@ -134,6 +146,40 @@ class VacationXanoContractTests(unittest.TestCase):
                     f'guid = "{guid}"',
                     endpoint.read_text(encoding="utf-8"),
                 )
+
+    def test_employee_endpoints_derive_active_employee_from_auth_identity(self):
+        for endpoint in EMPLOYEE_VACATION_ENDPOINTS:
+            with self.subTest(endpoint=endpoint.name):
+                source = endpoint.read_text(encoding="utf-8")
+                self.assertIn('auth = "user"', source)
+                self.assertIn(
+                    "where = $db.employees.user_id == $auth.id", source
+                )
+                self.assertIn("(($linked_employees|count) == 1)", source)
+                self.assertIn('($employee.status|lower) == "ativo"', source)
+                self.assertNotRegex(
+                    source,
+                    r"(?m)^\s*(?:int|text)\s+employees_id\b",
+                )
+
+    def test_employee_list_is_filtered_to_own_requests(self):
+        source = EMPLOYEE_VACATION_ENDPOINTS[0].read_text(encoding="utf-8")
+        self.assertIn("query my_vacation_requests verb=GET", source)
+        self.assertIn(
+            "where = $db.vacation_requests.employees_id == $employee.id",
+            source,
+        )
+        self.assertIn('"status"', source)
+
+    def test_employee_create_validates_dates_and_creates_pending_own_request(self):
+        source = EMPLOYEE_VACATION_ENDPOINTS[1].read_text(encoding="utf-8")
+        self.assertIn("query my_vacation_requests verb=POST", source)
+        self.assertIn("date start_date", source)
+        self.assertIn("date end_date", source)
+        self.assertIn("$input.start_date <= $input.end_date", source)
+        self.assertIn("employees_id: $employee.id", source)
+        self.assertIn('status: "Pendente"', source)
+        self.assertNotIn("$input.employees_id", source)
 
 
 if __name__ == "__main__":

@@ -30,13 +30,23 @@ from Gestao_RH_Impacta.department_service import (
     list_departments,
     update_department,
 )
+from Gestao_RH_Impacta.attendance_service import (
+    AttendanceAccessDenied,
+    AttendanceDay,
+    AttendanceError,
+    get_daily_attendance,
+    get_my_attendance,
+    record_next_punch,
+)
 from Gestao_RH_Impacta.vacation_service import (
     VacationAccessDenied,
     VacationRequest,
     VacationRequestError,
     count_current_vacation_employees,
     create_vacation_request,
+    create_my_vacation_request,
     decide_vacation_request,
+    list_my_vacation_requests,
     list_vacation_requests,
 )
 from Gestao_RH_Impacta.work_schedule_service import (
@@ -65,6 +75,7 @@ class State(rx.State):
     error_message: str = ""
     _auth_token: str = ""
     _auth_user_name: str = ""
+    _auth_user_role: str = ""
     _authenticated: bool = False
     _skip_next_auth_check: bool = False
     employee_rows: list[dict[str, str]] = []
@@ -114,6 +125,14 @@ class State(rx.State):
     vacation_form_success: str = ""
     vacation_action_status: str = "idle"
     vacation_action_error: str = ""
+    my_vacation_rows: list[dict[str, str]] = []
+    my_vacation_list_status: str = "loading"
+    my_vacation_list_error: str = ""
+    my_vacation_start_date: str = ""
+    my_vacation_end_date: str = ""
+    my_vacation_form_status: str = "idle"
+    my_vacation_form_error: str = ""
+    my_vacation_form_success: str = ""
     work_schedule_employee_id: str = ""
     work_schedule_id: str = ""
     work_schedule_days: list[dict[str, str]] = []
@@ -123,6 +142,37 @@ class State(rx.State):
     work_schedule_save_status: str = "idle"
     work_schedule_save_error: str = ""
     work_schedule_save_success: str = ""
+    my_attendance_row: dict[str, str] = {
+        "state": "",
+        "schedule_summary": "",
+        "next_punch": "",
+        "next_punch_label": "",
+        "next_punch_at": "",
+        "entry_at": "",
+        "break_start_at": "",
+        "break_end_at": "",
+        "exit_at": "",
+    }
+    my_attendance_punches: list[dict[str, str]] = []
+    my_attendance_status: str = "loading"
+    my_attendance_error: str = ""
+    my_attendance_success: str = ""
+    my_attendance_can_punch: bool = False
+    attendance_dashboard_rows: list[dict[str, str]] = []
+    attendance_dashboard_status: str = "loading"
+    attendance_dashboard_error: str = ""
+    attendance_state_counts: dict[str, str] = {
+        state: "0"
+        for state in (
+            "Não iniciou",
+            "Ponto aberto",
+            "Incompleto",
+            "Concluído",
+            "Folga",
+            "Jornada não cadastrada",
+            "Aguardando horário",
+        )
+    }
 
     @rx.var
     def user_name(self) -> str:
@@ -131,6 +181,10 @@ class State(rx.State):
     @rx.var
     def is_authenticated(self) -> bool:
         return self._authenticated
+
+    @rx.var
+    def user_role(self) -> str:
+        return self._auth_user_role
 
     def set_email(self, email: str):
         self.email = email
@@ -204,6 +258,7 @@ class State(rx.State):
 
         self._auth_token = user.token
         self._auth_user_name = user.user_name
+        self._auth_user_role = user.user_role
         self._authenticated = True
         self._skip_next_auth_check = True
         self._password = ""
@@ -217,7 +272,7 @@ class State(rx.State):
         if await self._authenticate(
             "/auth/login", {"email": self.email, "password": self._password}
         ):
-            return rx.redirect("/inicio")
+            return rx.redirect(self._home_route())
         return self._clear_password_input()
 
     async def submit_signup(self):
@@ -240,8 +295,11 @@ class State(rx.State):
                 "celular": self.celular,
             },
         ):
-            return rx.redirect("/inicio")
+            return rx.redirect(self._home_route())
         return self._clear_password_input()
+
+    def _home_route(self) -> str:
+        return "/inicio" if self._auth_user_role == "Gestor RH" else "/ponto"
 
     def _clear_password_input(self):
         return rx.call_script(
@@ -252,6 +310,7 @@ class State(rx.State):
     def _clear_session(self):
         self._auth_token = ""
         self._auth_user_name = ""
+        self._auth_user_role = ""
         self._authenticated = False
         self._skip_next_auth_check = False
         self.employee_rows = []
@@ -283,6 +342,14 @@ class State(rx.State):
         self.vacation_form_success = ""
         self.vacation_action_status = "idle"
         self.vacation_action_error = ""
+        self.my_vacation_rows = []
+        self.my_vacation_list_status = "loading"
+        self.my_vacation_list_error = ""
+        self.my_vacation_start_date = ""
+        self.my_vacation_end_date = ""
+        self.my_vacation_form_status = "idle"
+        self.my_vacation_form_error = ""
+        self.my_vacation_form_success = ""
         self.work_schedule_employee_id = ""
         self.work_schedule_id = ""
         self.work_schedule_days = []
@@ -292,6 +359,37 @@ class State(rx.State):
         self.work_schedule_save_status = "idle"
         self.work_schedule_save_error = ""
         self.work_schedule_save_success = ""
+        self.my_attendance_row = {
+            "state": "",
+            "schedule_summary": "",
+            "next_punch": "",
+            "next_punch_label": "",
+            "next_punch_at": "",
+            "entry_at": "",
+            "break_start_at": "",
+            "break_end_at": "",
+            "exit_at": "",
+        }
+        self.my_attendance_punches = []
+        self.my_attendance_status = "loading"
+        self.my_attendance_error = ""
+        self.my_attendance_success = ""
+        self.my_attendance_can_punch = False
+        self.attendance_dashboard_rows = []
+        self.attendance_dashboard_status = "loading"
+        self.attendance_dashboard_error = ""
+        self.attendance_state_counts = {
+            state: "0"
+            for state in (
+                "Não iniciou",
+                "Ponto aberto",
+                "Incompleto",
+                "Concluído",
+                "Folga",
+                "Jornada não cadastrada",
+                "Aguardando horário",
+            )
+        }
 
     async def require_auth(self):
         """Valida a sessao no Xano antes de apresentar paginas internas."""
@@ -319,8 +417,18 @@ class State(rx.State):
             return rx.redirect("/")
 
         self._auth_user_name = user.user_name
+        self._auth_user_role = user.user_role
         self._authenticated = True
         self.error_message = ""
+
+    async def require_hr_auth(self):
+        """Restringe as áreas administrativas ao perfil Gestor RH."""
+        redirect = await self.require_auth()
+        if redirect is not None:
+            return redirect
+        if self._auth_user_role != "Gestor RH":
+            return rx.redirect("/ponto")
+        return None
 
     async def load_employees(self):
         """Carrega a lista; a API protegida valida a sessão e o perfil."""
@@ -378,6 +486,10 @@ class State(rx.State):
 
     async def load_hr_data(self):
         """Carrega dados funcionais e solicitações para as telas do RH."""
+        redirect = await self.require_hr_auth()
+        if redirect is not None:
+            yield redirect
+            return
         async for event in self.load_employees():
             yield event
         if not self._auth_token:
@@ -385,9 +497,192 @@ class State(rx.State):
         async for event in self.load_vacation_requests():
             yield event
 
+    async def _refresh_identity_after_attendance_denial(self) -> bool:
+        try:
+            user = await get_authenticated_user(
+                XANO_AUTH_API_URL, self._auth_token
+            )
+        except SessionRejected:
+            self._clear_session()
+            self.error_message = "Sua sessão expirou. Entre novamente."
+            return False
+        except AuthenticationError:
+            self._authenticated = False
+            self.error_message = (
+                "Não foi possível validar sua sessão no Xano."
+            )
+            return False
+        except httpx.HTTPError:
+            self._authenticated = False
+            self.error_message = (
+                "Não foi possível conectar ao Xano para validar sua sessão."
+            )
+            return False
+        self._auth_user_name = user.user_name
+        self._auth_user_role = user.user_role
+        self._authenticated = True
+        return True
+
+    def _apply_my_attendance(self, attendance: AttendanceDay):
+        self.my_attendance_row = attendance.as_dict()
+        self.my_attendance_punches = [
+            dict(punch) for punch in attendance.punches
+        ]
+        self.my_attendance_can_punch = attendance.can_punch
+
+    async def load_my_attendance(self):
+        redirect = await self.require_auth()
+        if redirect is not None:
+            yield redirect
+            return
+        if self._auth_user_role == "Gestor RH":
+            yield rx.redirect("/assiduidade")
+            return
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.my_attendance_status = "loading"
+        self.my_attendance_error = ""
+        self.my_attendance_success = ""
+        yield
+
+        try:
+            attendance = await get_my_attendance(
+                XANO_RH_API_URL, self._auth_token
+            )
+        except AttendanceAccessDenied as error:
+            if not await self._refresh_identity_after_attendance_denial():
+                self.my_attendance_error = self.error_message
+                self.my_attendance_status = "error"
+                yield rx.redirect("/")
+                return
+            self.my_attendance_error = str(error)
+            self.my_attendance_status = "error"
+        except AttendanceError as error:
+            self.my_attendance_error = str(error)
+            self.my_attendance_status = "error"
+        except httpx.HTTPError:
+            self.my_attendance_error = (
+                "Não foi possível conectar ao Xano para consultar seu ponto."
+            )
+            self.my_attendance_status = "error"
+        else:
+            self._apply_my_attendance(attendance)
+            self.my_attendance_status = "loaded"
+        yield
+
+    async def record_attendance_punch(self):
+        if self.my_attendance_status != "loaded":
+            self.my_attendance_error = (
+                "Carregue seu ponto antes de registrar uma batida."
+            )
+            return
+        if not self.my_attendance_can_punch:
+            self.my_attendance_error = (
+                "A próxima batida ainda não está liberada."
+            )
+            return
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.my_attendance_status = "saving"
+        self.my_attendance_error = ""
+        self.my_attendance_success = ""
+        expected_label = self.my_attendance_row.get(
+            "next_punch_label", "batida"
+        )
+        yield
+
+        try:
+            await record_next_punch(XANO_RH_API_URL, self._auth_token)
+            attendance = await get_my_attendance(
+                XANO_RH_API_URL, self._auth_token
+            )
+        except AttendanceAccessDenied as error:
+            if not await self._refresh_identity_after_attendance_denial():
+                self.my_attendance_error = self.error_message
+                self.my_attendance_status = "error"
+                yield rx.redirect("/")
+                return
+            self.my_attendance_error = str(error)
+            self.my_attendance_status = "error"
+        except AttendanceError as error:
+            self.my_attendance_error = str(error)
+            self.my_attendance_status = "error"
+        except httpx.HTTPError:
+            self.my_attendance_error = (
+                "Não foi possível confirmar a batida no Xano. "
+                "Atualize o ponto antes de tentar novamente."
+            )
+            self.my_attendance_status = "error"
+        else:
+            self._apply_my_attendance(attendance)
+            self.my_attendance_success = (
+                f"{expected_label} registrada e confirmada pelo Xano."
+            )
+            self.my_attendance_status = "loaded"
+        yield
+
+    async def load_attendance_dashboard(self):
+        redirect = await self.require_hr_auth()
+        if redirect is not None:
+            yield redirect
+            return
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.attendance_dashboard_status = "loading"
+        self.attendance_dashboard_error = ""
+        yield
+
+        try:
+            rows = await get_daily_attendance(
+                XANO_RH_API_URL, self._auth_token
+            )
+        except AttendanceAccessDenied as error:
+            if not await self._refresh_identity_after_attendance_denial():
+                self.attendance_dashboard_error = self.error_message
+                self.attendance_dashboard_status = "error"
+                yield rx.redirect("/")
+                return
+            self.attendance_dashboard_error = str(error)
+            self.attendance_dashboard_status = "error"
+        except AttendanceError as error:
+            self.attendance_dashboard_error = str(error)
+            self.attendance_dashboard_status = "error"
+        except httpx.HTTPError:
+            self.attendance_dashboard_error = (
+                "Não foi possível conectar ao Xano para carregar o painel de ponto."
+            )
+            self.attendance_dashboard_status = "error"
+        else:
+            self.attendance_dashboard_rows = [
+                row.as_dict() for row in rows
+            ]
+            self.attendance_state_counts = {
+                state: str(sum(row.state == state for row in rows))
+                for state in (
+                    "Não iniciou",
+                    "Ponto aberto",
+                    "Incompleto",
+                    "Concluído",
+                    "Folga",
+                    "Jornada não cadastrada",
+                    "Aguardando horário",
+                )
+            }
+            self.attendance_dashboard_status = "loaded" if rows else "empty"
+        yield
+
     async def load_work_schedule_page(self):
         """Valida a sessão antes de carregar colaboradores para a tela."""
-        redirect = await self.require_auth()
+        redirect = await self.require_hr_auth()
         if redirect is not None:
             yield redirect
             return
@@ -654,6 +949,141 @@ class State(rx.State):
             )
             self.vacation_list_status = "loaded" if requests else "empty"
             self.vacation_count_status = "loaded"
+        yield
+
+    async def load_my_vacation_requests(self):
+        """Carrega somente o histórico de férias do funcionário autenticado."""
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.my_vacation_list_status = "loading"
+        self.my_vacation_list_error = ""
+        yield
+
+        try:
+            requests = await list_my_vacation_requests(
+                XANO_RH_API_URL, self._auth_token
+            )
+        except VacationAccessDenied as error:
+            try:
+                await get_authenticated_user(
+                    XANO_AUTH_API_URL, self._auth_token
+                )
+            except SessionRejected:
+                self._clear_session()
+                self.error_message = "Sua sessão expirou. Entre novamente."
+                self.my_vacation_list_error = self.error_message
+                self.my_vacation_list_status = "error"
+                yield rx.redirect("/")
+                return
+            except AuthenticationError:
+                self.my_vacation_list_error = (
+                    "Não foi possível validar sua sessão para consultar férias."
+                )
+                self.my_vacation_list_status = "error"
+            except httpx.HTTPError:
+                self.my_vacation_list_error = (
+                    "Não foi possível verificar a autorização para consultar férias."
+                )
+                self.my_vacation_list_status = "error"
+            else:
+                self.my_vacation_list_error = str(error)
+                self.my_vacation_list_status = "error"
+        except VacationRequestError as error:
+            self.my_vacation_list_error = str(error)
+            self.my_vacation_list_status = "error"
+        except httpx.HTTPError:
+            self.my_vacation_list_error = (
+                "Não foi possível conectar ao Xano para carregar suas férias."
+            )
+            self.my_vacation_list_status = "error"
+        else:
+            self.my_vacation_rows = [request.as_dict() for request in requests]
+            self.my_vacation_list_status = "loaded" if requests else "empty"
+        yield
+
+    async def load_vacation_page(self):
+        """Carrega férias conforme o perfil autenticado."""
+        redirect = await self.require_auth()
+        if redirect is not None:
+            yield redirect
+            return
+
+        if self._auth_user_role == "Gestor RH":
+            async for event in self.load_employees():
+                yield event
+            if self._auth_token:
+                async for event in self.load_vacation_requests():
+                    yield event
+            return
+
+        async for event in self.load_my_vacation_requests():
+            yield event
+
+    def set_my_vacation_start_date(self, start_date: str):
+        self.my_vacation_start_date = start_date
+        self.my_vacation_form_error = ""
+
+    def set_my_vacation_end_date(self, end_date: str):
+        self.my_vacation_end_date = end_date
+        self.my_vacation_form_error = ""
+
+    async def submit_my_vacation_request(self):
+        """Solicita férias para o funcionário identificado pela sessão."""
+        try:
+            start_date = date.fromisoformat(self.my_vacation_start_date)
+            end_date = date.fromisoformat(self.my_vacation_end_date)
+        except ValueError:
+            self.my_vacation_form_error = (
+                "Informe um período de férias válido."
+            )
+            return
+        if start_date > end_date:
+            self.my_vacation_form_error = (
+                "A data de início não pode ser posterior à data de fim."
+            )
+            return
+        if not self._auth_token:
+            self._clear_session()
+            yield rx.redirect("/")
+            return
+
+        self.my_vacation_form_status = "saving"
+        self.my_vacation_form_error = ""
+        self.my_vacation_form_success = ""
+        yield
+
+        try:
+            await create_my_vacation_request(
+                XANO_RH_API_URL,
+                self._auth_token,
+                start_date.isoformat(),
+                end_date.isoformat(),
+            )
+        except VacationAccessDenied as error:
+            self.my_vacation_form_error = str(error)
+            self.my_vacation_form_status = "error"
+        except VacationRequestError as error:
+            self.my_vacation_form_error = str(error)
+            self.my_vacation_form_status = "error"
+        except httpx.HTTPError:
+            self.my_vacation_form_error = (
+                "Não foi possível conectar ao Xano para solicitar férias."
+            )
+            self.my_vacation_form_status = "error"
+        else:
+            self.my_vacation_form_status = "success"
+            self.my_vacation_form_success = (
+                "Solicitação enviada como pendente."
+            )
+            self.my_vacation_start_date = ""
+            self.my_vacation_end_date = ""
+            async for event in self.load_my_vacation_requests():
+                yield event
+            return
+
         yield
 
     def set_vacation_form_employee_id(self, employee_id: str):
@@ -1124,6 +1554,10 @@ class State(rx.State):
             self.edit_department_error = ""
 
     async def load_departments(self):
+        redirect = await self.require_hr_auth()
+        if redirect is not None:
+            yield redirect
+            return
         if not self._auth_token:
             self._clear_session()
             yield rx.redirect("/")
@@ -1496,14 +1930,8 @@ def dashboard() -> rx.Component:
             navigation_item("Departamentos", "/departamentos"),
             navigation_item("Jornadas", "/jornadas"),
             navigation_item("Férias", "/ferias"),
-            navigation_item("Perfil", "/perfil"),
+            navigation_item("Ponto diário", "/assiduidade"),
             spacing="2", width="100%", margin_top="46px",
-        ),
-        rx.spacer(),
-        rx.box(
-            rx.text("PRECISA DE AJUDA?", color="#9fc7bd", font_size="0.66rem", letter_spacing="0.09em"),
-            rx.text("Suporte RH", color="white", weight="medium", margin_top="5px"),
-            padding="15px", background="rgba(255,255,255,0.1)", border_radius="12px", width="100%",
         ),
         width="248px", min_height="100vh", padding="32px 20px", background="#103f37",
         display=["none", "none", "flex"], align_items="start",
@@ -1540,6 +1968,7 @@ def dashboard() -> rx.Component:
                 rx.link(rx.button("Gerenciar departamentos", variant="soft", color_scheme="green"), href="/departamentos"),
                 rx.link(rx.button("Gerenciar jornadas", variant="soft", color_scheme="green"), href="/jornadas"),
                 rx.link(rx.button("Gerenciar férias", variant="soft", color_scheme="green"), href="/ferias"),
+                rx.link(rx.button("Acompanhamento de ponto", variant="soft", color_scheme="green"), href="/assiduidade"),
                 spacing="3", flex_wrap="wrap", margin_top="13px",
             ),
             background="white", border="1px solid #e1ece8", border_radius="14px", padding="22px", width="100%",
@@ -1552,25 +1981,36 @@ def dashboard() -> rx.Component:
 
 
 def app_sidebar(active: str) -> rx.Component:
-    items = [
+    hr_items = [
         ("Visão geral", "/inicio", "inicio"),
         ("Colaboradores", "/colaboradores", "colaboradores"),
         ("Departamentos", "/departamentos", "departamentos"),
         ("Jornadas", "/jornadas", "jornadas"),
         ("Férias", "/ferias", "ferias"),
-        ("Perfil", "/perfil", "perfil"),
+        ("Ponto diário", "/assiduidade", "assiduidade"),
     ]
+    hr_navigation = rx.vstack(
+        *[
+            navigation_item(label, href, active == key)
+            for label, href, key in hr_items
+        ],
+        spacing="2",
+        width="100%",
+        margin_top="46px",
+    )
+    employee_navigation = rx.vstack(
+        navigation_item("Meu ponto", "/ponto", active == "ponto"),
+        navigation_item("Minhas férias", "/ferias", active == "ferias"),
+        spacing="2",
+        width="100%",
+        margin_top="46px",
+    )
     return rx.vstack(
         brand(inverted=True),
-        rx.vstack(
-            *[navigation_item(label, href, active == key) for label, href, key in items],
-            spacing="2", width="100%", margin_top="46px",
-        ),
-        rx.spacer(),
-        rx.box(
-            rx.text("PRECISA DE AJUDA?", color="#9fc7bd", font_size="0.66rem", letter_spacing="0.09em"),
-            rx.text("Fale com o RH", color="white", weight="medium", margin_top="5px"),
-            padding="15px", background="rgba(255,255,255,0.1)", border_radius="12px", width="100%",
+        rx.cond(
+            State.user_role == "Gestor RH",
+            hr_navigation,
+            employee_navigation,
         ),
         width="248px", min_height="100vh", padding="32px 20px", background="#103f37",
         display=["none", "none", "flex"], align_items="start",
@@ -1585,10 +2025,10 @@ def page_header(title: str, subtitle: str) -> rx.Component:
             spacing="1", align_items="start",
         ),
         rx.hstack(
-            rx.box(rx.text("MN", color="#176f5d", weight="bold", font_size="0.82rem"), width="36px", height="36px",
+            rx.box(rx.text("RH", color="#176f5d", weight="bold", font_size="0.82rem"), width="36px", height="36px",
                    border_radius="full", background="#d9f1ea", display="flex", align_items="center", justify_content="center"),
-            rx.vstack(rx.text(rx.cond(State.user_name != "", State.user_name, "Marina Nunes"), color="#254a42", weight="medium", font_size="0.85rem"),
-                      rx.text("Colaboradora", color="#82978f", font_size="0.72rem"), spacing="0", align_items="start"),
+            rx.vstack(rx.text(rx.cond(State.user_name != "", State.user_name, "Usuário"), color="#254a42", weight="medium", font_size="0.85rem"),
+                      rx.text(State.user_role, color="#82978f", font_size="0.72rem"), spacing="0", align_items="start"),
             rx.button("Sair", on_click=State.sign_out, variant="ghost", color="#58766e", size="2"),
             spacing="2", align="center",
         ),
@@ -1636,6 +2076,410 @@ def perfil() -> rx.Component:
                       rx.button("Ver documentos", variant="soft", color_scheme="green", margin_top="18px"))
     return page_shell("perfil", "Meu perfil", "Consulte e mantenha suas informações atualizadas.",
                       rx.grid(personal, professional, columns=rx.breakpoints(initial="1", lg="2"), spacing="4", width="100%"), documents)
+
+
+def attendance_employee_punches() -> rx.Component:
+    return rx.vstack(
+        rx.cond(
+            State.my_attendance_row["entry_at"] != "",
+            event_row(
+                State.my_attendance_row["entry_at"],
+                "Entrada confirmada",
+                "Batida registrada pelo Xano",
+                "#15856d",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            State.my_attendance_row["break_start_at"] != "",
+            event_row(
+                State.my_attendance_row["break_start_at"],
+                "Saída para intervalo confirmada",
+                "Batida registrada pelo Xano",
+                "#d69b4d",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            State.my_attendance_row["break_end_at"] != "",
+            event_row(
+                State.my_attendance_row["break_end_at"],
+                "Retorno do intervalo confirmado",
+                "Batida registrada pelo Xano",
+                "#d69b4d",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            State.my_attendance_row["exit_at"] != "",
+            event_row(
+                State.my_attendance_row["exit_at"],
+                "Saída final confirmada",
+                "Batida registrada pelo Xano",
+                "#15856d",
+            ),
+            rx.fragment(),
+        ),
+        spacing="0",
+        width="100%",
+    )
+
+
+def ponto() -> rx.Component:
+    attendance_content = panel(
+        rx.hstack(
+            rx.vstack(
+                rx.text(
+                    "Situação de hoje",
+                    color="#708681",
+                    font_size="0.83rem",
+                ),
+                rx.badge(
+                    State.my_attendance_row["state"],
+                    color_scheme="green",
+                    variant="soft",
+                ),
+                spacing="2",
+                align_items="start",
+            ),
+            rx.button(
+                "Atualizar",
+                on_click=State.load_my_attendance,
+                variant="soft",
+                color_scheme="green",
+                margin_left="auto",
+                disabled=State.my_attendance_status == "saving",
+            ),
+            width="100%",
+            align="center",
+        ),
+        rx.vstack(
+            rx.text("Jornada de hoje", color="#20473e", weight="bold"),
+            rx.text(
+                State.my_attendance_row["schedule_summary"],
+                color="#78918a",
+                font_size="0.9rem",
+            ),
+            spacing="2",
+            align_items="start",
+            margin_top="20px",
+        ),
+        rx.vstack(
+            rx.text("Batidas confirmadas", color="#20473e", weight="bold"),
+            attendance_employee_punches(),
+            spacing="2",
+            width="100%",
+            margin_top="24px",
+        ),
+        rx.cond(
+            State.my_attendance_row["next_punch_label"] != "",
+            rx.vstack(
+                rx.text(
+                    "Próxima batida: "
+                    + State.my_attendance_row["next_punch_label"]
+                    + " às "
+                    + State.my_attendance_row["next_punch_at"],
+                    color="#244940",
+                    weight="medium",
+                ),
+                rx.button(
+                    "Registrar "
+                    + State.my_attendance_row["next_punch_label"],
+                    on_click=State.record_attendance_punch,
+                    background="#15856d",
+                    color="white",
+                    disabled=(
+                        (State.my_attendance_status != "loaded")
+                        | (State.my_attendance_can_punch == False)
+                    ),
+                    margin_top="8px",
+                ),
+                spacing="2",
+                align_items="start",
+                margin_top="24px",
+            ),
+            rx.text(
+                "Nenhuma batida pendente para hoje.",
+                color="#78918a",
+                margin_top="24px",
+            ),
+        ),
+        rx.cond(
+            State.my_attendance_success != "",
+            rx.callout(
+                State.my_attendance_success,
+                icon="circle_check",
+                color_scheme="green",
+                margin_top="18px",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            State.my_attendance_error != "",
+            rx.callout(
+                State.my_attendance_error,
+                icon="triangle_alert",
+                color_scheme="red",
+                margin_top="18px",
+            ),
+            rx.fragment(),
+        ),
+    )
+    return page_shell(
+        "ponto",
+        "Meu ponto",
+        "Consulte sua jornada e registre somente a próxima batida liberada.",
+        rx.cond(
+            State.my_attendance_status == "loading",
+            panel(
+                rx.spinner(color="green"),
+                rx.text(
+                    "Carregando seu ponto...",
+                    color="#78918a",
+                    margin_top="12px",
+                ),
+            ),
+            rx.cond(
+                State.my_attendance_status == "error",
+                panel(
+                    rx.text(
+                        State.my_attendance_error,
+                        color="#b42318",
+                    ),
+                    rx.button(
+                        "Tentar novamente",
+                        on_click=State.load_my_attendance,
+                        variant="soft",
+                        color_scheme="green",
+                        margin_top="14px",
+                    ),
+                ),
+                rx.cond(
+                    (State.my_attendance_status == "loaded")
+                    | (State.my_attendance_status == "saving"),
+                    attendance_content,
+                    panel(
+                        rx.text(
+                            "Aguarde a confirmação do estado do ponto.",
+                            color="#78918a",
+                        )
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+def attendance_dashboard_row(row: dict[str, str]) -> rx.Component:
+    return rx.box(
+        rx.hstack(
+            rx.vstack(
+                rx.text(row["employee_name"], color="#244940", weight="bold"),
+                rx.text(
+                    rx.cond(
+                        row["department"] != "",
+                        row["job_title"] + " · " + row["department"],
+                        row["job_title"],
+                    ),
+                    color="#839690",
+                    font_size="0.8rem",
+                ),
+                spacing="1",
+                align_items="start",
+            ),
+            rx.badge(
+                row["state"],
+                color_scheme="green",
+                variant="soft",
+                margin_left="auto",
+            ),
+            width="100%",
+            align="center",
+            flex_wrap="wrap",
+        ),
+        rx.text(
+            "Jornada: " + row["schedule_summary"],
+            color="#54736b",
+            font_size="0.82rem",
+            margin_top="10px",
+        ),
+        rx.grid(
+            rx.text(
+                "Entrada: "
+                + rx.cond(row["entry_at"] != "", row["entry_at"], "Não registrada"),
+                color="#78918a",
+                font_size="0.8rem",
+            ),
+            rx.text(
+                "Saída intervalo: "
+                + rx.cond(
+                    row["break_start_at"] != "",
+                    row["break_start_at"],
+                    "Não registrada",
+                ),
+                color="#78918a",
+                font_size="0.8rem",
+            ),
+            rx.text(
+                "Retorno intervalo: "
+                + rx.cond(
+                    row["break_end_at"] != "",
+                    row["break_end_at"],
+                    "Não registrado",
+                ),
+                color="#78918a",
+                font_size="0.8rem",
+            ),
+            rx.text(
+                "Saída final: "
+                + rx.cond(row["exit_at"] != "", row["exit_at"], "Não registrada"),
+                color="#78918a",
+                font_size="0.8rem",
+            ),
+            columns=rx.breakpoints(initial="1", sm="2"),
+            spacing="2",
+            width="100%",
+            margin_top="12px",
+        ),
+        rx.cond(
+            row["next_punch_label"] != "",
+            rx.text(
+                "Próxima: "
+                + row["next_punch_label"]
+                + " às "
+                + row["next_punch_at"],
+                color="#54736b",
+                font_size="0.8rem",
+                margin_top="10px",
+            ),
+            rx.fragment(),
+        ),
+        width="100%",
+        padding="16px 0",
+        border_bottom="1px solid #edf2f0",
+    )
+
+
+def assiduidade() -> rx.Component:
+    attendance_state_cards = rx.grid(
+        summary_card(
+            "NÃO INICIOU",
+            State.attendance_state_counts["Não iniciou"],
+            "Após o horário previsto",
+            "#d69b4d",
+        ),
+        summary_card(
+            "PONTO ABERTO",
+            State.attendance_state_counts["Ponto aberto"],
+            "Próxima batida ainda não venceu",
+            "#15856d",
+        ),
+        summary_card(
+            "INCOMPLETO",
+            State.attendance_state_counts["Incompleto"],
+            "Há uma batida pendente",
+            "#c75d3a",
+        ),
+        summary_card(
+            "CONCLUÍDO",
+            State.attendance_state_counts["Concluído"],
+            "Todas as batidas registradas",
+            "#15856d",
+        ),
+        columns=rx.breakpoints(initial="1", sm="2", lg="4"),
+        spacing="4",
+        width="100%",
+    )
+    attendance_directory = panel(
+        rx.hstack(
+            rx.vstack(
+                rx.text(
+                    "Acompanhamento de hoje",
+                    color="#20473e",
+                    weight="bold",
+                    font_size="1.05rem",
+                ),
+                rx.text(
+                    "Situação diária dos colaboradores ativos e horários confirmados.",
+                    color="#78918a",
+                    font_size="0.84rem",
+                ),
+                spacing="1",
+                align_items="start",
+            ),
+            rx.button(
+                "Atualizar",
+                on_click=State.load_attendance_dashboard,
+                variant="soft",
+                color_scheme="green",
+                margin_left="auto",
+            ),
+            width="100%",
+            align="center",
+            flex_wrap="wrap",
+        ),
+        rx.vstack(
+            rx.foreach(
+                State.attendance_dashboard_rows,
+                attendance_dashboard_row,
+            ),
+            spacing="0",
+            width="100%",
+            margin_top="16px",
+        ),
+    )
+    return page_shell(
+        "assiduidade",
+        "Ponto diário",
+        "Acompanhe quem ainda não iniciou, está com o ponto aberto ou concluiu a jornada.",
+        attendance_state_cards,
+        rx.cond(
+            State.attendance_dashboard_status == "loading",
+            panel(
+                rx.spinner(color="green"),
+                rx.text(
+                    "Carregando os registros de hoje...",
+                    color="#78918a",
+                    margin_top="12px",
+                ),
+            ),
+            rx.cond(
+                State.attendance_dashboard_status == "error",
+                panel(
+                    rx.text(
+                        State.attendance_dashboard_error,
+                        color="#b42318",
+                    ),
+                    rx.button(
+                        "Tentar novamente",
+                        on_click=State.load_attendance_dashboard,
+                        variant="soft",
+                        color_scheme="green",
+                        margin_top="14px",
+                    ),
+                ),
+                rx.cond(
+                    State.attendance_dashboard_status == "empty",
+                    panel(
+                        rx.text(
+                            "Nenhum colaborador ativo para acompanhar hoje.",
+                            color="#78918a",
+                        )
+                    ),
+                    rx.cond(
+                        State.attendance_dashboard_status == "loaded",
+                        attendance_directory,
+                        panel(
+                            rx.text(
+                                "Aguarde o carregamento do acompanhamento diário.",
+                                color="#78918a",
+                            )
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
 
 
 def colaboradores() -> rx.Component:
@@ -2794,13 +3638,190 @@ def ferias() -> rx.Component:
         ),
     )
 
-    return page_shell(
-        "ferias",
-        "Gestão de férias",
-        "Cadastre períodos e decida solicitações dos colaboradores.",
-        vacation_summary_card(),
-        request_form,
-        requests_directory,
+    employee_request_form = panel(
+        rx.text(
+            "Solicitar férias",
+            color="#20473e",
+            weight="bold",
+            font_size="1.05rem",
+        ),
+        rx.text(
+            "Informe o período desejado. O Gestor RH analisará sua solicitação.",
+            color="#78918a",
+            font_size="0.88rem",
+            margin_top="8px",
+        ),
+        rx.cond(
+            State.my_vacation_form_success != "",
+            rx.text(
+                State.my_vacation_form_success,
+                color="#17745f",
+                padding_top="12px",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            State.my_vacation_form_error != "",
+            rx.text(
+                State.my_vacation_form_error,
+                color="#a33b32",
+                padding_top="12px",
+            ),
+            rx.fragment(),
+        ),
+        rx.hstack(
+            rx.vstack(
+                rx.text(
+                    "Início das férias",
+                    weight="medium",
+                    color="#35534c",
+                    font_size="0.9rem",
+                ),
+                rx.input(
+                    type="date",
+                    value=State.my_vacation_start_date,
+                    on_change=State.set_my_vacation_start_date,
+                    width="100%",
+                ),
+                width="100%",
+                spacing="2",
+                align_items="start",
+            ),
+            rx.vstack(
+                rx.text(
+                    "Fim das férias",
+                    weight="medium",
+                    color="#35534c",
+                    font_size="0.9rem",
+                ),
+                rx.input(
+                    type="date",
+                    value=State.my_vacation_end_date,
+                    on_change=State.set_my_vacation_end_date,
+                    width="100%",
+                ),
+                width="100%",
+                spacing="2",
+                align_items="start",
+            ),
+            width="100%",
+            spacing="4",
+            flex_wrap="wrap",
+            margin_top="18px",
+        ),
+        rx.button(
+            rx.cond(
+                State.my_vacation_form_status == "saving",
+                "Enviando...",
+                "Enviar solicitação",
+            ),
+            on_click=State.submit_my_vacation_request,
+            disabled=State.my_vacation_form_status == "saving",
+            background="#15856d",
+            color="white",
+            margin_left="auto",
+            margin_top="18px",
+        ),
+    )
+
+    employee_requests_directory = panel(
+        rx.hstack(
+            rx.text(
+                "Minhas solicitações",
+                color="#20473e",
+                weight="bold",
+                font_size="1.05rem",
+            ),
+            rx.button(
+                "Atualizar",
+                on_click=State.load_my_vacation_requests,
+                variant="soft",
+                color_scheme="green",
+                margin_left="auto",
+            ),
+            width="100%",
+        ),
+        rx.cond(
+            State.my_vacation_list_status == "loading",
+            rx.hstack(
+                rx.spinner(color="#15856d"),
+                rx.text("Carregando suas solicitações...", color="#78918a"),
+                spacing="3",
+                padding="24px 0",
+            ),
+            rx.cond(
+                State.my_vacation_list_status == "error",
+                rx.text(
+                    State.my_vacation_list_error,
+                    color="#a33b32",
+                    padding="20px 0",
+                ),
+                rx.cond(
+                    State.my_vacation_list_status == "empty",
+                    rx.text(
+                        "Você ainda não tem solicitações de férias.",
+                        color="#78918a",
+                        padding="20px 0",
+                    ),
+                    rx.vstack(
+                        rx.foreach(
+                            State.my_vacation_rows,
+                            lambda request: rx.hstack(
+                                rx.vstack(
+                                    rx.text(
+                                        request["start_date"],
+                                        " a ",
+                                        request["end_date"],
+                                        color="#244940",
+                                        weight="medium",
+                                    ),
+                                    rx.text(
+                                        "Período solicitado",
+                                        color="#849791",
+                                        font_size="0.82rem",
+                                    ),
+                                    spacing="1",
+                                    align_items="start",
+                                ),
+                                rx.text(
+                                    request["status"],
+                                    color="#17745f",
+                                    weight="medium",
+                                    font_size="0.88rem",
+                                ),
+                                width="100%",
+                                padding="12px 0",
+                                border_bottom="1px solid #edf2f0",
+                                align="center",
+                                justify="between",
+                                flex_wrap="wrap",
+                            ),
+                        ),
+                        spacing="0",
+                        width="100%",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    return rx.cond(
+        State.user_role == "Gestor RH",
+        page_shell(
+            "ferias",
+            "Gestão de férias",
+            "Cadastre períodos e decida solicitações dos colaboradores.",
+            vacation_summary_card(),
+            request_form,
+            requests_directory,
+        ),
+        page_shell(
+            "ferias",
+            "Minhas férias",
+            "Solicite um período e acompanhe a decisão do Gestor RH.",
+            employee_request_form,
+            employee_requests_directory,
+        ),
     )
 
 
@@ -2826,7 +3847,7 @@ app.add_page(
     protected_page(perfil()),
     route="/perfil",
     title="Meu perfil | Impacta",
-    on_load=State.require_auth,
+    on_load=State.require_hr_auth,
 )
 app.add_page(
     protected_page(colaboradores()),
@@ -2849,6 +3870,18 @@ app.add_page(
 app.add_page(
     protected_page(ferias()),
     route="/ferias",
-    title="Gestão de férias | Impacta",
-    on_load=State.load_hr_data,
+    title="Férias | Impacta",
+    on_load=State.load_vacation_page,
+)
+app.add_page(
+    protected_page(ponto()),
+    route="/ponto",
+    title="Meu ponto | Impacta",
+    on_load=State.load_my_attendance,
+)
+app.add_page(
+    protected_page(assiduidade()),
+    route="/assiduidade",
+    title="Ponto diário | Impacta",
+    on_load=State.load_attendance_dashboard,
 )
