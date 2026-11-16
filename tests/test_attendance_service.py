@@ -177,6 +177,47 @@ class AttendanceServiceTests(unittest.TestCase):
         )
         self.assertEqual(row.state, "Jornada não cadastrada")
 
+    def test_schedule_accepts_boolean_and_string_workday_values(self):
+        parsed_date = attendance_service._parse_work_date(WORK_DATE)
+        server_time = attendance_service._parse_server_time(SERVER_NOW)
+
+        for is_workday in (True, "true"):
+            with self.subTest(is_workday=is_workday):
+                schedule = {
+                    **SCHEDULE_WITHOUT_BREAK,
+                    "is_workday": is_workday,
+                }
+                row = attendance_service._build_day(
+                    EMPLOYEE, schedule, [], server_time, parsed_date
+                )
+                self.assertEqual(
+                    row.schedule_summary, "Entrada 09:00; Saída final 17:00"
+                )
+
+        for is_workday in (False, "false"):
+            with self.subTest(is_workday=is_workday):
+                row = attendance_service._build_day(
+                    EMPLOYEE,
+                    {"is_workday": is_workday},
+                    [],
+                    server_time,
+                    parsed_date,
+                )
+                self.assertEqual(row.state, "Folga")
+
+    def test_invalid_schedule_error_identifies_shape_without_values(self):
+        with self.assertRaisesRegex(
+            attendance_service.AttendanceError,
+            "campo is_workday ausente; chaves recebidas: start_time",
+        ):
+            attendance_service._parse_day_schedule({"start_time": "09:00"})
+
+        with self.assertRaisesRegex(
+            attendance_service.AttendanceError,
+            "tipo recebido: str",
+        ):
+            attendance_service._parse_day_schedule("invalid")
+
     def test_rejects_malformed_schedule_and_out_of_order_punches(self):
         with self.assertRaises(attendance_service.AttendanceError):
             attendance_service._build_day(
@@ -224,6 +265,19 @@ class AttendanceServiceTests(unittest.TestCase):
         )
         with self.assertRaises(attendance_service.AttendanceError):
             attendance_service._parse_dashboard(data)
+
+    def test_employee_attendance_selects_day_from_weekly_schedule_response(self):
+        weekly_schedule = {
+            day: {"is_workday": False}
+            for day in attendance_service.WEEKDAYS
+        }
+        weekly_schedule["monday"] = SCHEDULE_WITHOUT_BREAK
+        data = my_attendance(weekly_schedule, [])
+
+        row = attendance_service._parse_my_attendance(data)
+
+        self.assertIn("Entrada 09:00", row.schedule_summary)
+        self.assertEqual(row.state, "Não iniciou")
 
 
 class AttendanceApiTests(unittest.IsolatedAsyncioTestCase):

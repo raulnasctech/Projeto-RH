@@ -209,9 +209,35 @@ def _parse_minute(value: Any, field: str) -> int:
 def _parse_day_schedule(value: Any) -> dict[str, Any] | None:
     if value is None:
         return None
-    if not isinstance(value, dict) or not isinstance(value.get("is_workday"), bool):
-        raise AttendanceError("A API retornou uma jornada diária inválida.")
-    if not value["is_workday"]:
+    if not isinstance(value, dict):
+        raise AttendanceError(
+            "A API retornou uma jornada diária inválida "
+            f"(tipo recebido: {type(value).__name__})."
+        )
+    is_workday_value = value.get("is_workday")
+    if is_workday_value is True or is_workday_value == "true":
+        is_workday = True
+    elif is_workday_value is False or is_workday_value == "false":
+        is_workday = False
+    else:
+        received_keys = sorted(
+            key
+            for key in value
+            if isinstance(key, str) and key.isidentifier()
+        )
+        present_fields = ", ".join(received_keys[:12]) or "nenhuma"
+        if len(received_keys) > 12:
+            present_fields = f"{present_fields}, ..."
+        detail = (
+            "campo is_workday ausente"
+            if "is_workday" not in value
+            else f"is_workday com tipo {type(is_workday_value).__name__}"
+        )
+        raise AttendanceError(
+            "A API retornou uma jornada diária inválida "
+            f"({detail}; chaves recebidas: {present_fields})."
+        )
+    if not is_workday:
         if any(
             value.get(field) is not None
             for field in (
@@ -425,6 +451,10 @@ def _parse_my_attendance(data: Any) -> AttendanceDay:
     schedule_value = _event_snapshot(punches_value)
     if schedule_value is None:
         schedule_value = data.get("schedule")
+    if isinstance(schedule_value, dict) and all(
+        day in schedule_value for day in WEEKDAYS
+    ):
+        schedule_value = _schedule_for_date(schedule_value, work_date)
     return _build_day(employee, schedule_value, punches_value, server_time, work_date)
 
 
